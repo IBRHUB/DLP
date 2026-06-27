@@ -941,7 +941,7 @@ internal static class AppUpdater
     {
         if (string.IsNullOrWhiteSpace(updateInfo.InstallerUrl))
         {
-            throw new InvalidOperationException("Installer URL is missing.");
+            throw new InvalidOperationException("Installer URL is missing");
         }
 
         string updateDirectory = Path.Combine(
@@ -1002,7 +1002,7 @@ internal static class AppUpdater
             if (!string.Equals(actualDigest, updateInfo.Sha256Digest, StringComparison.OrdinalIgnoreCase))
             {
                 File.Delete(installerPath);
-                throw new InvalidOperationException("Downloaded installer checksum did not match the release digest.");
+                throw new InvalidOperationException("Downloaded installer checksum did not match the release digest");
             }
         }
 
@@ -1045,7 +1045,7 @@ internal static class AppUpdater
     {
         HttpClient client = new()
         {
-            Timeout = TimeSpan.FromSeconds(45)
+            Timeout = TimeSpan.FromMinutes(10)
         };
 
         client.DefaultRequestHeaders.UserAgent.ParseAdd("DLP/1.0.0 (+https://github.com/IBRHUB/DLP)");
@@ -1164,10 +1164,12 @@ internal sealed class DownloadForm : Form
     private readonly Button _videoButton = new();
     private readonly Button _audioButton = new();
     private readonly Button _openFolderButton = new();
+    private readonly Button _updateAppButton = new();
     private readonly Button _updateYtDlpButton = new();
 
     private Process? _downloadProcess;
     private bool _isPreparingDownload;
+    private bool _isUpdatingApp;
     private bool _isUpdatingYtDlp;
 
     public DownloadForm(string url, string source)
@@ -1211,7 +1213,7 @@ internal sealed class DownloadForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = true;
-        Width = 600;
+        Width = 660;
         Height = 292;
         BackColor = Color.FromArgb(250, 251, 252);
         Font = new Font("Segoe UI", 10F);
@@ -1271,12 +1273,13 @@ internal sealed class DownloadForm : Form
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            ColumnCount = 3,
+            ColumnCount = 4,
             RowCount = 1,
             Margin = new Padding(0, 0, 0, 18)
         };
 
         folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
@@ -1292,11 +1295,13 @@ internal sealed class DownloadForm : Form
         };
 
         ConfigureSecondaryButton(_openFolderButton, "Open folder", (_, _) => OpenDownloadFolder());
+        ConfigureSecondaryButton(_updateAppButton, "Update app", async (_, _) => await UpdateAppAsync());
         ConfigureSecondaryButton(_updateYtDlpButton, "Update yt-dlp", async (_, _) => await UpdateYtDlpAsync());
 
         folderRow.Controls.Add(folderLabel, 0, 0);
         folderRow.Controls.Add(_openFolderButton, 1, 0);
-        folderRow.Controls.Add(_updateYtDlpButton, 2, 0);
+        folderRow.Controls.Add(_updateAppButton, 2, 0);
+        folderRow.Controls.Add(_updateYtDlpButton, 3, 0);
 
         TableLayoutPanel actions = new()
         {
@@ -1310,8 +1315,8 @@ internal sealed class DownloadForm : Form
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
 
-        ConfigurePrimaryButton(_videoButton, "Download video", async (_, _) => await StartDownloadAsync(DownloadKind.Video));
-        ConfigurePrimaryButton(_audioButton, "Download audio", async (_, _) => await StartDownloadAsync(DownloadKind.Audio));
+        ConfigurePrimaryButton(_videoButton, "Download Video", async (_, _) => await StartDownloadAsync(DownloadKind.Video));
+        ConfigurePrimaryButton(_audioButton, "Download Audio", async (_, _) => await StartDownloadAsync(DownloadKind.Audio));
 
         actions.Controls.Add(_videoButton, 0, 0);
         actions.Controls.Add(_audioButton, 1, 0);
@@ -1436,7 +1441,7 @@ internal sealed class DownloadForm : Form
 
     private async Task StartDownloadAsync(DownloadKind kind)
     {
-        if (_downloadProcess is not null || _ytDlpPath is null || _isPreparingDownload)
+        if (_downloadProcess is not null || _ytDlpPath is null || _isPreparingDownload || _isUpdatingApp)
         {
             return;
         }
@@ -1582,6 +1587,7 @@ internal sealed class DownloadForm : Form
     {
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
+        _updateAppButton.Enabled = false;
         _updateYtDlpButton.Enabled = false;
         _progressBar.Visible = true;
         _progressBar.Value = 0;
@@ -1593,6 +1599,7 @@ internal sealed class DownloadForm : Form
         _isPreparingDownload = true;
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
+        _updateAppButton.Enabled = false;
         _updateYtDlpButton.Enabled = false;
         _progressBar.Visible = false;
         _progressBar.Value = 0;
@@ -1601,19 +1608,87 @@ internal sealed class DownloadForm : Form
 
     private void SetIdleButtons()
     {
-        bool canRunYtDlp = _ytDlpPath is not null
+        bool canRunAppTools = !_isUpdatingApp
             && !_isUpdatingYtDlp
             && !_isPreparingDownload
             && _downloadProcess is null;
+        bool canRunYtDlp = _ytDlpPath is not null && canRunAppTools;
 
         _videoButton.Enabled = canRunYtDlp;
         _audioButton.Enabled = canRunYtDlp;
+        _updateAppButton.Enabled = canRunAppTools;
         _updateYtDlpButton.Enabled = canRunYtDlp;
+    }
+
+    private async Task UpdateAppAsync()
+    {
+        if (_downloadProcess is not null || _isPreparingDownload || _isUpdatingApp || _isUpdatingYtDlp)
+        {
+            return;
+        }
+
+        bool installerStarted = false;
+        _isUpdatingApp = true;
+        _videoButton.Enabled = false;
+        _audioButton.Enabled = false;
+        _updateAppButton.Enabled = false;
+        _updateYtDlpButton.Enabled = false;
+        _progressBar.Visible = false;
+        _progressBar.Value = 0;
+        SetStatus("Checking app update", 0);
+
+        try
+        {
+            Program.Log("Checking app update");
+            AppUpdateInfo updateInfo = await AppUpdater.CheckAsync();
+
+            if (updateInfo.Status == AppUpdateStatus.UpToDate)
+            {
+                SetStatus("DLP is up to date", 0);
+                Program.Log($"App update skipped current={updateInfo.CurrentVersion} latest={updateInfo.LatestVersion}");
+                return;
+            }
+
+            if (updateInfo.Status != AppUpdateStatus.Available)
+            {
+                SetStatus(updateInfo.Message ?? "App update unavailable", 0);
+                Program.Log($"App update unavailable: {updateInfo.Message ?? updateInfo.Status.ToString()}");
+                return;
+            }
+
+            SetStatus($"Downloading DLP {updateInfo.LatestVersion}", 0);
+            _progressBar.Visible = true;
+
+            string installerPath = await AppUpdater.DownloadInstallerAsync(
+                updateInfo,
+                progress => SetStatus($"Downloading update {progress}%", progress));
+
+            SetStatus("Installing update", 100);
+            Program.Log($"Starting app update installer: {installerPath}");
+            AppUpdater.StartInstaller(installerPath);
+            installerStarted = true;
+
+            BeginInvoke(new Action(Application.Exit));
+        }
+        catch (Exception ex)
+        {
+            _progressBar.Visible = false;
+            SetStatus("App update failed check app.log", 0);
+            Program.Log($"App update failed: {ex}");
+        }
+        finally
+        {
+            if (!installerStarted)
+            {
+                _isUpdatingApp = false;
+                SetIdleButtons();
+            }
+        }
     }
 
     private async Task UpdateYtDlpAsync()
     {
-        if (_ytDlpPath is null || _downloadProcess is not null || _isUpdatingYtDlp)
+        if (_ytDlpPath is null || _downloadProcess is not null || _isUpdatingYtDlp || _isUpdatingApp)
         {
             return;
         }
@@ -1621,6 +1696,7 @@ internal sealed class DownloadForm : Form
         _isUpdatingYtDlp = true;
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
+        _updateAppButton.Enabled = false;
         _updateYtDlpButton.Enabled = false;
         _progressBar.Visible = false;
         SetStatus("Updating yt-dlp", 0);

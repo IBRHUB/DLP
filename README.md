@@ -2,6 +2,8 @@
 
 DLP is a Windows 10/11 x64 app and Chromium browser extension for sending supported media URLs from the browser to a local Windows app through Native Messaging
 
+Architecture flow: [docs/DLP_FLOW.md](docs/DLP_FLOW.md)
+
 ## What It Does
 
 - Adds a `Download with DLP` browser context menu
@@ -10,6 +12,7 @@ DLP is a Windows 10/11 x64 app and Chromium browser extension for sending suppor
 - Opens the DLP window for manual video/audio download
 - Supports silent download from the extension popup
 - Skips duplicate downloads using media id detection
+- Supports app self-update from GitHub Releases
 - Uses `yt-dlp` for downloads
 - Uses `ffmpeg` when media merging or audio conversion is needed
 
@@ -201,6 +204,7 @@ Manual mode:
 
 - Click the `DLP` overlay button or browser context menu
 - Choose `Download video` or `Download audio`
+- Use `Update app` to install the latest `DLP_Setup.exe` from GitHub Releases
 - Use `Update yt-dlp` in the app when a site stops working
 
 Silent mode:
@@ -215,6 +219,13 @@ Duplicate detection:
 - DLP checks the media id before downloading
 - If a file with the same id already exists in `Downloads\DLP`, the download is skipped
 - If the same media is already downloading, the second request is skipped
+
+Self update:
+
+- DLP checks `IBRHUB/DLP` GitHub Releases
+- It downloads the `DLP_Setup.exe` release asset
+- It verifies the release SHA-256 digest when GitHub provides one
+- It starts the installer and closes the app
 
 Download folder:
 
@@ -247,6 +258,8 @@ Download folder:
 - Microsoft .NET 8: [https://dotnet.microsoft.com/en-us/download/dotnet/8.0](https://dotnet.microsoft.com/en-us/download/dotnet/8.0)
 - yt-dlp: [https://github.com/yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - FFmpeg: [https://ffmpeg.org/download.html](https://ffmpeg.org/download.html)
+- DLP Releases: [https://github.com/IBRHUB/DLP/releases](https://github.com/IBRHUB/DLP/releases)
+- GitHub Releases API: [https://docs.github.com/en/rest/releases/releases](https://docs.github.com/en/rest/releases/releases)
 
 ### Browser extension
 
