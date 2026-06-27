@@ -8,6 +8,10 @@
   let refreshTimer = null;
   let extensionActive = true;
   let observer = null;
+  let tikTokScriptUrlCache = null;
+  let tikTokScriptUrlCacheAt = 0;
+  let tikTokItemsCache = null;
+  let tikTokItemsCacheAt = 0;
 
   function hasRuntime() {
     try {
@@ -81,6 +85,210 @@
     }
   }
 
+  function normalizeTikTokVideoUrl(url) {
+    try {
+      const parsed = new URL(url, location.origin);
+
+      if (["vm.tiktok.com", "vt.tiktok.com"].includes(parsed.hostname.toLowerCase())) {
+        return parsed.href;
+      }
+
+      const match = parsed.pathname.match(/^\/@([^/]+)\/video\/(\d+)/i);
+
+      if (!match) {
+        return null;
+      }
+
+      return `https://www.tiktok.com/@${match[1]}/video/${match[2]}`;
+    } catch {
+      return null;
+    }
+  }
+
+  function findTikTokVideoUrlInText(text) {
+    if (!text) {
+      return null;
+    }
+
+    const normalizedText = text
+      .replace(/\\u002F/g, "/")
+      .replace(/\\\//g, "/")
+      .replace(/&amp;/g, "&");
+
+    const absoluteMatch = normalizedText.match(/https?:\/\/(?:www\.)?tiktok\.com\/@[A-Za-z0-9._-]+\/video\/\d+/i);
+
+    if (absoluteMatch) {
+      return normalizeTikTokVideoUrl(absoluteMatch[0]);
+    }
+
+    const relativeMatch = normalizedText.match(/\/@[A-Za-z0-9._-]+\/video\/\d+/i);
+
+    if (relativeMatch) {
+      return normalizeTikTokVideoUrl(relativeMatch[0]);
+    }
+
+    return null;
+  }
+
+  function findTikTokVideoUrlInScripts() {
+    const now = Date.now();
+
+    if (tikTokScriptUrlCache && now - tikTokScriptUrlCacheAt < 2000) {
+      return tikTokScriptUrlCache;
+    }
+
+    const scripts = Array.from(document.scripts);
+
+    for (const script of scripts) {
+      const text = script.textContent || "";
+
+      if (!text.includes("/video/") && !text.includes("\\/video\\/")) {
+        continue;
+      }
+
+      const url = findTikTokVideoUrlInText(text);
+
+      if (url) {
+        tikTokScriptUrlCache = url;
+        tikTokScriptUrlCacheAt = now;
+        return url;
+      }
+    }
+
+    tikTokScriptUrlCacheAt = now;
+    return null;
+  }
+
+  function readStringProperty(value, names) {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    for (const name of names) {
+      const propertyValue = value[name];
+
+      if (typeof propertyValue === "string" && propertyValue.trim()) {
+        return propertyValue.trim();
+      }
+
+      if (typeof propertyValue === "number") {
+        return String(propertyValue);
+      }
+    }
+
+    return null;
+  }
+
+  function normalizeTikTokUsername(username) {
+    return username ? username.replace(/^@/, "").trim().toLowerCase() : null;
+  }
+
+  function getTikTokItemId(item) {
+    const directId = readStringProperty(item, ["id", "aweme_id", "awemeId", "itemId"]);
+
+    if (directId && /^\d{10,}$/.test(directId)) {
+      return directId;
+    }
+
+    const videoId = readStringProperty(item.video, ["id"]);
+
+    return videoId && /^\d{10,}$/.test(videoId) ? videoId : null;
+  }
+
+  function getTikTokItemUsername(item) {
+    const directUsername = readStringProperty(item, ["authorUniqueId", "author_unique_id", "uniqueId", "unique_id"]);
+
+    if (directUsername) {
+      return directUsername;
+    }
+
+    const author = item.author || item.authorInfo || item.authorStats;
+
+    return readStringProperty(author, ["uniqueId", "unique_id", "nickname", "name"]);
+  }
+
+  function looksLikeTikTokVideoItem(item) {
+    return Boolean(
+      item
+        && typeof item === "object"
+        && (item.video || item.author || item.music || item.stats || item.desc || item.createTime)
+    );
+  }
+
+  function collectTikTokItems(value, items, depth) {
+    if (!value || depth > 18 || items.length > 300) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        collectTikTokItems(item, items, depth + 1);
+      }
+
+      return;
+    }
+
+    if (typeof value !== "object") {
+      return;
+    }
+
+    const itemId = looksLikeTikTokVideoItem(value) ? getTikTokItemId(value) : null;
+    const username = itemId ? getTikTokItemUsername(value) : null;
+
+    if (itemId && username) {
+      items.push({
+        id: itemId,
+        username: normalizeTikTokUsername(username)
+      });
+    }
+
+    for (const child of Object.values(value)) {
+      collectTikTokItems(child, items, depth + 1);
+    }
+  }
+
+  function getTikTokItemsFromPageData() {
+    const now = Date.now();
+
+    if (tikTokItemsCache && now - tikTokItemsCacheAt < 2500) {
+      return tikTokItemsCache;
+    }
+
+    const items = [];
+
+    for (const script of Array.from(document.scripts)) {
+      const text = script.textContent?.trim();
+
+      if (!text || (!text.includes("uniqueId") && !text.includes("aweme") && !text.includes("itemStruct"))) {
+        continue;
+      }
+
+      try {
+        collectTikTokItems(JSON.parse(text), items, 0);
+      } catch {
+        // TikTok mixes JSON and non-JSON scripts; only JSON state blocks are useful here.
+      }
+    }
+
+    tikTokItemsCache = items;
+    tikTokItemsCacheAt = now;
+
+    return items;
+  }
+
+  function findTikTokVideoUrlInPageData(username) {
+    const normalizedUsername = normalizeTikTokUsername(username);
+
+    if (!normalizedUsername) {
+      return null;
+    }
+
+    const item = getTikTokItemsFromPageData()
+      .find((candidate) => candidate.username === normalizedUsername);
+
+    return item ? buildTikTokVideoUrl(item.username, item.id) : null;
+  }
+
   function isXStatusUrl(url) {
     try {
       const parsed = new URL(url);
@@ -121,6 +329,101 @@
     }
 
     return null;
+  }
+
+  function getElementAncestors(element, maxDepth) {
+    const ancestors = [];
+    let current = element;
+
+    while (current && ancestors.length < maxDepth) {
+      ancestors.push(current);
+      current = current.parentElement;
+    }
+
+    return ancestors;
+  }
+
+  function getAttributeValue(element, names) {
+    for (const name of names) {
+      const value = element.getAttribute?.(name);
+
+      if (!value) {
+        continue;
+      }
+
+      return value;
+    }
+
+    return null;
+  }
+
+  function findTikTokVideoId(container) {
+    if (!container) {
+      return null;
+    }
+
+    const attributeNames = ["data-id", "data-item-id", "data-aweme-id", "data-video-id", "data-videoid", "itemid"];
+    const containerValue = getAttributeValue(container, attributeNames);
+    const containerMatch = containerValue?.match(/\d{10,}/);
+
+    if (containerMatch) {
+      return containerMatch[0];
+    }
+
+    const elements = Array.from(container.querySelectorAll("*"));
+
+    for (const element of elements) {
+      const value = getAttributeValue(element, attributeNames);
+      const match = value?.match(/\d{10,}/);
+
+      if (match) {
+        return match[0];
+      }
+    }
+
+    const html = container.outerHTML || "";
+    const htmlMatch = html.match(/\/video\/(\d{10,})/i)
+      || html.match(/"videoId"\s*:\s*"(\d{10,})"/i)
+      || html.match(/"aweme_id"\s*:\s*"(\d{10,})"/i)
+      || html.match(/"awemeId"\s*:\s*"(\d{10,})"/i);
+
+    return htmlMatch ? htmlMatch[1] : null;
+  }
+
+  function findTikTokUsername(container) {
+    if (!container) {
+      return null;
+    }
+
+    const links = Array.from(container.querySelectorAll('a[href^="/@"]'));
+
+    for (const link of links) {
+      const match = link.getAttribute("href")?.match(/^\/@([^/?#]+)/);
+
+      if (match) {
+        return match[1];
+      }
+    }
+
+    const usernameElement = container.querySelector('[data-e2e="video-author-uniqueid"]')
+      || container.querySelector('[data-e2e="browse-username"]')
+      || container.querySelector('[data-e2e="feed-user-name"]')
+      || container.querySelector('[data-e2e="user-title"]')
+      || container.querySelector('a[href^="/@"] span')
+      || container.querySelector('a[href^="/@"]');
+
+    const text = usernameElement?.textContent?.trim() || "";
+    const usernameMatch = text.match(/@?([A-Za-z0-9._-]{2,24})/);
+
+    return usernameMatch ? usernameMatch[1] : null;
+  }
+
+  function buildTikTokVideoUrl(username, videoId) {
+    if (!username || !videoId) {
+      return null;
+    }
+
+    return `https://www.tiktok.com/@${username}/video/${videoId}`;
   }
 
   function isSupportedVideoPage() {
@@ -250,16 +553,55 @@
       return null;
     }
 
-    const container = video.closest('[data-e2e="browse-video"]')
+    const container = video.closest('[data-e2e="recommend-list-item-container"]')
+      || video.closest('[data-e2e="browse-video"]')
       || video.closest('[data-e2e="feed-video"]')
       || video.closest('[data-e2e="video-container"]')
+      || video.closest('[data-e2e="feed-item"]')
       || video.closest('[class*="DivItemContainer"]')
+      || video.closest('[class*="DivVideoWrapper"]')
       || video.closest('[class*="VideoContainer"]')
       || video.closest('[class*="PlayerContainer"]')
       || video.parentElement;
 
-    return findFirstMatchingLink(container, isTikTokVideoUrl)
-      || findFirstMatchingLink(document, isTikTokVideoUrl);
+    for (const ancestor of getElementAncestors(container, 10)) {
+      const link = findFirstMatchingLink(ancestor, isTikTokVideoUrl);
+
+      if (link) {
+        return normalizeTikTokVideoUrl(link) || link;
+      }
+
+      const embeddedUrl = findTikTokVideoUrlInText(ancestor.outerHTML);
+
+      if (embeddedUrl) {
+        return embeddedUrl;
+      }
+
+      const videoId = findTikTokVideoId(ancestor);
+      const username = findTikTokUsername(ancestor);
+      const pageDataUrl = findTikTokVideoUrlInPageData(username);
+
+      if (pageDataUrl) {
+        return pageDataUrl;
+      }
+
+      const builtUrl = buildTikTokVideoUrl(username, videoId);
+
+      if (builtUrl) {
+        return builtUrl;
+      }
+    }
+
+    const containerUsername = findTikTokUsername(container);
+    const pageDataUrl = findTikTokVideoUrlInPageData(containerUsername);
+
+    if (pageDataUrl) {
+      return pageDataUrl;
+    }
+
+    const documentLink = findFirstMatchingLink(document, isTikTokVideoUrl);
+
+    return documentLink ? normalizeTikTokVideoUrl(documentLink) || documentLink : findTikTokVideoUrlInScripts();
   }
 
   function getInstagramPlayerElement() {
@@ -587,6 +929,7 @@
     const player = getPlayerElement();
 
     if (!player) {
+      removeButton();
       return;
     }
 
