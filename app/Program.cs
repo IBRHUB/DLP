@@ -1,7 +1,10 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 internal static class Program
@@ -460,6 +463,20 @@ internal static class SilentDownloader
         Directory.CreateDirectory(downloadDirectory);
         Program.Log($"Starting silent video download from {source}: {url}");
 
+        using DuplicateReservation duplicateReservation = await DuplicateDetector.ReserveAsync(ytDlpPath, downloadDirectory, url);
+
+        if (duplicateReservation.Status == DuplicateStatus.AlreadyDownloaded)
+        {
+            Program.Log($"Silent download skipped duplicate media id '{duplicateReservation.MediaId}': {duplicateReservation.ExistingFilePath}");
+            return 0;
+        }
+
+        if (duplicateReservation.Status == DuplicateStatus.AlreadyRunning)
+        {
+            Program.Log($"Silent download skipped active duplicate media id '{duplicateReservation.MediaId}'");
+            return 0;
+        }
+
         ProcessStartInfo startInfo = new()
         {
             FileName = ytDlpPath,
@@ -537,6 +554,229 @@ internal static class SilentDownloader
     }
 }
 
+internal enum DuplicateStatus
+{
+    Ready,
+    Unknown,
+    AlreadyDownloaded,
+    AlreadyRunning
+}
+
+internal sealed class DuplicateReservation : IDisposable
+{
+    private readonly FileStream? _lockStream;
+    private readonly string? _lockPath;
+
+    public DuplicateReservation(DuplicateStatus status, string? mediaId, string? existingFilePath, FileStream? lockStream, string? lockPath)
+    {
+        Status = status;
+        MediaId = mediaId;
+        ExistingFilePath = existingFilePath;
+        _lockStream = lockStream;
+        _lockPath = lockPath;
+    }
+
+    public DuplicateStatus Status { get; }
+
+    public string? MediaId { get; }
+
+    public string? ExistingFilePath { get; }
+
+    public void Dispose()
+    {
+        _lockStream?.Dispose();
+
+        if (!string.IsNullOrWhiteSpace(_lockPath))
+        {
+            try
+            {
+                File.Delete(_lockPath);
+            }
+            catch (Exception ex)
+            {
+                Program.Log($"Duplicate lock cleanup failed: {ex.Message}");
+            }
+        }
+    }
+}
+
+internal static class DuplicateDetector
+{
+    private static readonly Regex MediaIdRegex = new(@"^[A-Za-z0-9_.:-]{3,160}$", RegexOptions.Compiled);
+
+    public static async Task<DuplicateReservation> ReserveAsync(string ytDlpPath, string downloadDirectory, string url)
+    {
+        string? mediaId = await TryGetMediaIdAsync(ytDlpPath, url);
+
+        if (string.IsNullOrWhiteSpace(mediaId))
+        {
+            Program.Log("Duplicate detector skipped: media id could not be resolved");
+            return new DuplicateReservation(DuplicateStatus.Unknown, null, null, null, null);
+        }
+
+        if (TryFindExistingDownload(downloadDirectory, mediaId, out string? existingFilePath))
+        {
+            return new DuplicateReservation(DuplicateStatus.AlreadyDownloaded, mediaId, existingFilePath, null, null);
+        }
+
+        string lockDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DLP",
+            "locks");
+
+        Directory.CreateDirectory(lockDirectory);
+
+        string lockPath = Path.Combine(lockDirectory, $"{SanitizeFileName(mediaId)}.lock");
+
+        try
+        {
+            FileStream lockStream = new(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            lockStream.SetLength(0);
+
+            byte[] details = Encoding.UTF8.GetBytes($"{DateTimeOffset.UtcNow:O}{Environment.NewLine}{url}{Environment.NewLine}");
+            await lockStream.WriteAsync(details);
+            await lockStream.FlushAsync();
+
+            return new DuplicateReservation(DuplicateStatus.Ready, mediaId, null, lockStream, lockPath);
+        }
+        catch (IOException)
+        {
+            return new DuplicateReservation(DuplicateStatus.AlreadyRunning, mediaId, null, null, null);
+        }
+    }
+
+    private static async Task<string?> TryGetMediaIdAsync(string ytDlpPath, string url)
+    {
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = ytDlpPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+
+        startInfo.ArgumentList.Add("--no-playlist");
+        startInfo.ArgumentList.Add("--skip-download");
+        startInfo.ArgumentList.Add("--print");
+        startInfo.ArgumentList.Add("id");
+        startInfo.ArgumentList.Add(url);
+
+        using Process process = new() { StartInfo = startInfo };
+
+        try
+        {
+            process.Start();
+
+            Task<string> outputTask = process.StandardOutput.ReadToEndAsync();
+            Task<string> errorTask = process.StandardError.ReadToEndAsync();
+            Task waitTask = process.WaitForExitAsync();
+
+            if (await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromSeconds(30))) != waitTask)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Best effort cleanup after metadata timeout.
+                }
+
+                Program.Log("Duplicate detector timed out while resolving media id");
+                return null;
+            }
+
+            string output = await outputTask;
+            string error = await errorTask;
+
+            if (process.ExitCode != 0)
+            {
+                Program.Log($"Duplicate detector failed to resolve media id: {Shorten(error.Trim(), 300)}");
+                return null;
+            }
+
+            foreach (string line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+            {
+                string candidate = line.Trim();
+
+                if (MediaIdRegex.IsMatch(candidate))
+                {
+                    Program.Log($"Duplicate detector resolved media id: {candidate}");
+                    return candidate;
+                }
+            }
+
+            Program.Log($"Duplicate detector received no valid media id: {Shorten(output.Trim(), 300)}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"Duplicate detector start failed: {ex}");
+            return null;
+        }
+    }
+
+    private static bool TryFindExistingDownload(string downloadDirectory, string mediaId, out string? existingFilePath)
+    {
+        existingFilePath = null;
+
+        if (!Directory.Exists(downloadDirectory))
+        {
+            return false;
+        }
+
+        string token = $"[{mediaId}]";
+
+        foreach (string filePath in Directory.EnumerateFiles(downloadDirectory, "*", SearchOption.TopDirectoryOnly))
+        {
+            string fileName = Path.GetFileName(filePath);
+
+            if (!fileName.Contains(token, StringComparison.OrdinalIgnoreCase) || IsTemporaryDownloadFile(fileName))
+            {
+                continue;
+            }
+
+            existingFilePath = filePath;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsTemporaryDownloadFile(string fileName)
+    {
+        return fileName.EndsWith(".part", StringComparison.OrdinalIgnoreCase)
+            || fileName.EndsWith(".ytdl", StringComparison.OrdinalIgnoreCase)
+            || fileName.EndsWith(".temp", StringComparison.OrdinalIgnoreCase)
+            || fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        StringBuilder builder = new(value.Length);
+
+        foreach (char character in value)
+        {
+            builder.Append(Path.GetInvalidFileNameChars().Contains(character) ? '_' : character);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string Shorten(string value, int maxLength)
+    {
+        if (value.Length <= maxLength)
+        {
+            return value;
+        }
+
+        return string.Concat(value.AsSpan(0, maxLength - 1), "...");
+    }
+}
+
 internal static class ToolResolver
 {
     public static string? ResolveToolPath(string environmentVariable, string fileName)
@@ -591,6 +831,324 @@ internal static class ToolResolver
     }
 }
 
+internal enum AppUpdateStatus
+{
+    Available,
+    UpToDate,
+    NoInstallerAsset,
+    Failed
+}
+
+internal sealed record AppUpdateInfo(
+    AppUpdateStatus Status,
+    string CurrentVersion,
+    string? LatestVersion,
+    string? ReleaseUrl,
+    string? InstallerUrl,
+    string? InstallerName,
+    string? Sha256Digest,
+    string? Message);
+
+internal static class AppUpdater
+{
+    private const string LatestReleaseApiUrl = "https://api.github.com/repos/IBRHUB/DLP/releases/latest";
+    private const string FallbackReleaseApiUrl = "https://api.github.com/repos/IBRHUB/DLP/releases/tags/1.0.0";
+    private const string PreferredInstallerName = "DLP_Setup.exe";
+
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public static async Task<AppUpdateInfo> CheckAsync()
+    {
+        string currentVersionText = GetCurrentVersionText();
+
+        try
+        {
+            using HttpClient client = CreateHttpClient();
+            GitHubRelease? release = await GetReleaseAsync(client, LatestReleaseApiUrl)
+                ?? await GetReleaseAsync(client, FallbackReleaseApiUrl);
+
+            if (release is null)
+            {
+                return new AppUpdateInfo(
+                    AppUpdateStatus.Failed,
+                    currentVersionText,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "Could not read GitHub release");
+            }
+
+            string latestVersionText = NormalizeVersionText(release.TagName);
+
+            if (TryParseVersion(currentVersionText, out Version? currentVersion)
+                && TryParseVersion(latestVersionText, out Version? latestVersion)
+                && latestVersion <= currentVersion)
+            {
+                return new AppUpdateInfo(
+                    AppUpdateStatus.UpToDate,
+                    currentVersionText,
+                    latestVersionText,
+                    release.HtmlUrl,
+                    null,
+                    null,
+                    null,
+                    "DLP is up to date");
+            }
+
+            GitHubAsset? installerAsset = SelectInstallerAsset(release.Assets);
+
+            if (installerAsset is null || string.IsNullOrWhiteSpace(installerAsset.BrowserDownloadUrl))
+            {
+                return new AppUpdateInfo(
+                    AppUpdateStatus.NoInstallerAsset,
+                    currentVersionText,
+                    latestVersionText,
+                    release.HtmlUrl,
+                    null,
+                    null,
+                    null,
+                    "Release does not include DLP_Setup.exe");
+            }
+
+            return new AppUpdateInfo(
+                AppUpdateStatus.Available,
+                currentVersionText,
+                latestVersionText,
+                release.HtmlUrl,
+                installerAsset.BrowserDownloadUrl,
+                installerAsset.Name,
+                NormalizeSha256Digest(installerAsset.Digest),
+                null);
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"App update check failed: {ex}");
+            return new AppUpdateInfo(
+                AppUpdateStatus.Failed,
+                currentVersionText,
+                null,
+                null,
+                null,
+                null,
+                null,
+                "Update check failed");
+        }
+    }
+
+    public static async Task<string> DownloadInstallerAsync(AppUpdateInfo updateInfo, Action<int>? reportProgress)
+    {
+        if (string.IsNullOrWhiteSpace(updateInfo.InstallerUrl))
+        {
+            throw new InvalidOperationException("Installer URL is missing.");
+        }
+
+        string updateDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DLP",
+            "updates");
+
+        Directory.CreateDirectory(updateDirectory);
+
+        string installerName = string.IsNullOrWhiteSpace(updateInfo.InstallerName)
+            ? PreferredInstallerName
+            : Path.GetFileName(updateInfo.InstallerName);
+
+        string installerPath = Path.Combine(updateDirectory, installerName);
+
+        using HttpClient client = CreateHttpClient();
+        using HttpResponseMessage response = await client.GetAsync(updateInfo.InstallerUrl, HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+
+        long? contentLength = response.Content.Headers.ContentLength;
+        await using Stream remoteStream = await response.Content.ReadAsStreamAsync();
+        await using FileStream fileStream = new(installerPath, FileMode.Create, FileAccess.Write, FileShare.None);
+
+        byte[] buffer = new byte[1024 * 128];
+        long totalRead = 0;
+        int lastProgress = -1;
+
+        while (true)
+        {
+            int read = await remoteStream.ReadAsync(buffer);
+
+            if (read == 0)
+            {
+                break;
+            }
+
+            await fileStream.WriteAsync(buffer.AsMemory(0, read));
+            totalRead += read;
+
+            if (contentLength is > 0)
+            {
+                int progress = Math.Clamp((int)Math.Round(totalRead * 100d / contentLength.Value), 0, 100);
+
+                if (progress != lastProgress)
+                {
+                    lastProgress = progress;
+                    reportProgress?.Invoke(progress);
+                }
+            }
+        }
+
+        reportProgress?.Invoke(100);
+
+        if (!string.IsNullOrWhiteSpace(updateInfo.Sha256Digest))
+        {
+            string actualDigest = await ComputeSha256Async(installerPath);
+
+            if (!string.Equals(actualDigest, updateInfo.Sha256Digest, StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(installerPath);
+                throw new InvalidOperationException("Downloaded installer checksum did not match the release digest.");
+            }
+        }
+
+        return installerPath;
+    }
+
+    public static void StartInstaller(string installerPath)
+    {
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = installerPath,
+            UseShellExecute = false,
+            CreateNoWindow = false
+        };
+
+        startInfo.ArgumentList.Add("/CURRENTUSER");
+        startInfo.ArgumentList.Add("/SILENT");
+        startInfo.ArgumentList.Add("/SUPPRESSMSGBOXES");
+        startInfo.ArgumentList.Add("/NORESTART");
+        startInfo.ArgumentList.Add("/CLOSEAPPLICATIONS");
+
+        Process.Start(startInfo);
+    }
+
+    private static async Task<GitHubRelease?> GetReleaseAsync(HttpClient client, string url)
+    {
+        using HttpResponseMessage response = await client.GetAsync(url);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            Program.Log($"GitHub release request failed {response.StatusCode}: {url}");
+            return null;
+        }
+
+        await using Stream stream = await response.Content.ReadAsStreamAsync();
+        return await JsonSerializer.DeserializeAsync<GitHubRelease>(stream, JsonOptions);
+    }
+
+    private static HttpClient CreateHttpClient()
+    {
+        HttpClient client = new()
+        {
+            Timeout = TimeSpan.FromSeconds(45)
+        };
+
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("DLP/1.0.0 (+https://github.com/IBRHUB/DLP)");
+        client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+
+        return client;
+    }
+
+    private static GitHubAsset? SelectInstallerAsset(IReadOnlyList<GitHubAsset>? assets)
+    {
+        if (assets is null || assets.Count == 0)
+        {
+            return null;
+        }
+
+        return assets.FirstOrDefault(asset => string.Equals(asset.Name, PreferredInstallerName, StringComparison.OrdinalIgnoreCase))
+            ?? assets.FirstOrDefault(asset => asset.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                && asset.Name.Contains("setup", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string GetCurrentVersionText()
+    {
+        Assembly assembly = typeof(Program).Assembly;
+        string? informationalVersion = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+
+        if (!string.IsNullOrWhiteSpace(informationalVersion))
+        {
+            return NormalizeVersionText(informationalVersion);
+        }
+
+        return NormalizeVersionText(assembly.GetName().Version?.ToString() ?? "0.0.0");
+    }
+
+    private static bool TryParseVersion(string versionText, out Version? version)
+    {
+        return Version.TryParse(NormalizeVersionText(versionText), out version);
+    }
+
+    private static string NormalizeVersionText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "0.0.0";
+        }
+
+        string normalized = value.Trim();
+
+        if (normalized.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = normalized[1..];
+        }
+
+        int metadataIndex = normalized.IndexOf('+', StringComparison.Ordinal);
+
+        if (metadataIndex >= 0)
+        {
+            normalized = normalized[..metadataIndex];
+        }
+
+        int prereleaseIndex = normalized.IndexOf('-', StringComparison.Ordinal);
+
+        if (prereleaseIndex >= 0)
+        {
+            normalized = normalized[..prereleaseIndex];
+        }
+
+        return normalized;
+    }
+
+    private static string? NormalizeSha256Digest(string? digest)
+    {
+        const string prefix = "sha256:";
+
+        if (string.IsNullOrWhiteSpace(digest) || !digest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return digest[prefix.Length..].Trim();
+    }
+
+    private static async Task<string> ComputeSha256Async(string filePath)
+    {
+        await using FileStream stream = File.OpenRead(filePath);
+        byte[] hash = await SHA256.HashDataAsync(stream);
+
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private sealed record GitHubRelease(
+        [property: JsonPropertyName("tag_name")] string TagName,
+        [property: JsonPropertyName("html_url")] string HtmlUrl,
+        [property: JsonPropertyName("assets")] IReadOnlyList<GitHubAsset>? Assets);
+
+    private sealed record GitHubAsset(
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("browser_download_url")] string BrowserDownloadUrl,
+        [property: JsonPropertyName("digest")] string? Digest);
+}
+
 internal sealed class DownloadForm : Form
 {
     private static readonly Regex ProgressRegex = new(@"(?<percent>\d{1,3}(?:\.\d+)?)%", RegexOptions.Compiled);
@@ -606,8 +1164,11 @@ internal sealed class DownloadForm : Form
     private readonly Button _videoButton = new();
     private readonly Button _audioButton = new();
     private readonly Button _openFolderButton = new();
+    private readonly Button _updateYtDlpButton = new();
 
     private Process? _downloadProcess;
+    private bool _isPreparingDownload;
+    private bool _isUpdatingYtDlp;
 
     public DownloadForm(string url, string source)
     {
@@ -710,12 +1271,13 @@ internal sealed class DownloadForm : Form
         {
             Dock = DockStyle.Top,
             AutoSize = true,
-            ColumnCount = 2,
+            ColumnCount = 3,
             RowCount = 1,
             Margin = new Padding(0, 0, 0, 18)
         };
 
         folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
         Label folderLabel = new()
@@ -730,9 +1292,11 @@ internal sealed class DownloadForm : Form
         };
 
         ConfigureSecondaryButton(_openFolderButton, "Open folder", (_, _) => OpenDownloadFolder());
+        ConfigureSecondaryButton(_updateYtDlpButton, "Update yt-dlp", async (_, _) => await UpdateYtDlpAsync());
 
         folderRow.Controls.Add(folderLabel, 0, 0);
         folderRow.Controls.Add(_openFolderButton, 1, 0);
+        folderRow.Controls.Add(_updateYtDlpButton, 2, 0);
 
         TableLayoutPanel actions = new()
         {
@@ -862,6 +1426,7 @@ internal sealed class DownloadForm : Form
         {
             _videoButton.Enabled = false;
             _audioButton.Enabled = false;
+            _updateYtDlpButton.Enabled = false;
             SetStatus("yt-dlp.exe was not found", 0);
             return;
         }
@@ -871,13 +1436,34 @@ internal sealed class DownloadForm : Form
 
     private async Task StartDownloadAsync(DownloadKind kind)
     {
-        if (_downloadProcess is not null || _ytDlpPath is null)
+        if (_downloadProcess is not null || _ytDlpPath is null || _isPreparingDownload)
         {
             return;
         }
 
         Directory.CreateDirectory(_downloadDirectory);
         Program.Log($"Starting {kind.ToString().ToLowerInvariant()} download from {_source}: {_url}");
+        SetPreparingDownloadState();
+
+        using DuplicateReservation duplicateReservation = await DuplicateDetector.ReserveAsync(_ytDlpPath, _downloadDirectory, _url);
+
+        if (duplicateReservation.Status == DuplicateStatus.AlreadyDownloaded)
+        {
+            SetStatus("Already downloaded", 0);
+            Program.Log($"Download skipped duplicate media id '{duplicateReservation.MediaId}': {duplicateReservation.ExistingFilePath}");
+            _isPreparingDownload = false;
+            SetIdleButtons();
+            return;
+        }
+
+        if (duplicateReservation.Status == DuplicateStatus.AlreadyRunning)
+        {
+            SetStatus("Already downloading", 0);
+            Program.Log($"Download skipped active duplicate media id '{duplicateReservation.MediaId}'");
+            _isPreparingDownload = false;
+            SetIdleButtons();
+            return;
+        }
 
         ProcessStartInfo startInfo = new()
         {
@@ -923,6 +1509,7 @@ internal sealed class DownloadForm : Form
 
         try
         {
+            _isPreparingDownload = false;
             process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
@@ -948,6 +1535,7 @@ internal sealed class DownloadForm : Form
         finally
         {
             _downloadProcess = null;
+            _isPreparingDownload = false;
             SetIdleButtons();
         }
     }
@@ -994,16 +1582,106 @@ internal sealed class DownloadForm : Form
     {
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
+        _updateYtDlpButton.Enabled = false;
         _progressBar.Visible = true;
         _progressBar.Value = 0;
         SetStatus(kind == DownloadKind.Video ? "Downloading best video" : "Downloading best audio", 0);
     }
 
+    private void SetPreparingDownloadState()
+    {
+        _isPreparingDownload = true;
+        _videoButton.Enabled = false;
+        _audioButton.Enabled = false;
+        _updateYtDlpButton.Enabled = false;
+        _progressBar.Visible = false;
+        _progressBar.Value = 0;
+        SetStatus("Checking duplicate", 0);
+    }
+
     private void SetIdleButtons()
     {
-        bool hasYtDlp = _ytDlpPath is not null;
-        _videoButton.Enabled = hasYtDlp;
-        _audioButton.Enabled = hasYtDlp;
+        bool canRunYtDlp = _ytDlpPath is not null
+            && !_isUpdatingYtDlp
+            && !_isPreparingDownload
+            && _downloadProcess is null;
+
+        _videoButton.Enabled = canRunYtDlp;
+        _audioButton.Enabled = canRunYtDlp;
+        _updateYtDlpButton.Enabled = canRunYtDlp;
+    }
+
+    private async Task UpdateYtDlpAsync()
+    {
+        if (_ytDlpPath is null || _downloadProcess is not null || _isUpdatingYtDlp)
+        {
+            return;
+        }
+
+        _isUpdatingYtDlp = true;
+        _videoButton.Enabled = false;
+        _audioButton.Enabled = false;
+        _updateYtDlpButton.Enabled = false;
+        _progressBar.Visible = false;
+        SetStatus("Updating yt-dlp", 0);
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = _ytDlpPath,
+            WorkingDirectory = Path.GetDirectoryName(_ytDlpPath) ?? AppContext.BaseDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+
+        startInfo.ArgumentList.Add("--update");
+
+        using Process process = new() { StartInfo = startInfo };
+
+        process.OutputDataReceived += (_, e) => LogYtDlpUpdateLine(e.Data);
+        process.ErrorDataReceived += (_, e) => LogYtDlpUpdateLine(e.Data);
+
+        try
+        {
+            Program.Log($"Starting yt-dlp update: {_ytDlpPath}");
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode == 0)
+            {
+                SetStatus("yt-dlp updated", 0);
+                Program.Log("yt-dlp update completed");
+            }
+            else
+            {
+                SetStatus("yt-dlp update failed check app.log", 0);
+                Program.Log($"yt-dlp update failed with exit code {process.ExitCode}.");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Could not update yt-dlp check app.log", 0);
+            Program.Log($"yt-dlp update start failed: {ex}");
+        }
+        finally
+        {
+            _isUpdatingYtDlp = false;
+            SetIdleButtons();
+        }
+    }
+
+    private static void LogYtDlpUpdateLine(string? line)
+    {
+        if (!string.IsNullOrWhiteSpace(line))
+        {
+            Program.Log($"yt-dlp update: {line}");
+        }
     }
 
     private void SetStatus(string text, int progress)
@@ -1046,7 +1724,7 @@ internal sealed class DownloadForm : Form
         {
             process.Kill(entireProcessTree: true);
             SetStatus("Canceled", 0);
-            Program.Log("Download canceled by user.");
+            Program.Log("Download canceled by user");
         }
         catch (Exception ex)
         {
