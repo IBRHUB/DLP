@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DLP</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+
+    body {
+      width: 260px;
+      margin: 0;
+      background: #fafbfc;
+      color: #1f2937;
+    }
+
+    .shell {
+      padding: 14px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .version {
+      color: #6b7280;
+      font-size: 12px;
+    }
+
+    .setting {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 13px;
+      border: 1px solid #c6cfda;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .setting-title {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .switch {
+      position: relative;
+      flex: 0 0 auto;
+      width: 44px;
+      height: 24px;
+    }
+
+    .switch input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+    }
+
+    .track {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: #d1d5db;
+      cursor: pointer;
+      transition: background 150ms ease;
+    }
+
+    .track::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #f9fafb;
+      transition: transform 150ms ease;
+    }
+
+    .switch input:checked + .track {
+      background: #1665d8;
+    }
+
+    .switch input:checked + .track::after {
+      transform: translateX(20px);
+    }
+
+    .status {
+      min-height: 18px;
+      margin-top: 10px;
+      color: #4b5563;
+      font-size: 12px;
+    }
+
+    .footer {
+      margin-top: 8px;
+      color: #6b7280;
+      font-size: 11px;
+      text-align: right;
+    }
+
+    .footer a {
+      color: #1665d8;
+      text-decoration: none;
+    }
+
+    .footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="header">
+      <h1 class="title">DLP</h1>
+      <span id="version" class="version"></span>
+    </div>
+
+    <section class="setting">
+      <div>
+        <p class="setting-title">Silent download</p>
+      </div>
+
+      <label class="switch" title="Toggle silent download">
+        <input id="silentDownload" type="checkbox">
+        <span class="track"></span>
+      </label>
+    </section>
+
+    <div id="status" class="status">Loading</div>
+    <div class="footer">
+      Developed by <a id="ibrahimLink" href="https://ibrhub.net">IBRAHIM</a>
+      <br>
+      Source <a id="sourceLink" href="https://github.com/IBRHUB/DLP">IBRHUB/DLP</a>
+    </div>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

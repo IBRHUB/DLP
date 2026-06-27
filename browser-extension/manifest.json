@@ -1,0 +1,76 @@
+{
+  "manifest_version": 3,
+  "name": "DLP",
+  "description": "Send supported media URLs to DLP Developed by IBRAHIM",
+  "version": "1.0.0",
+  "homepage_url": "https://ibrhub.net",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3oUFonL+cmmI/zPeaJZmajiIzwvQKDuH0mbvdCKgZ0fu96L3WZX7OPqGqVMchmGlkEx5ChiFGX9q6MhNaaEGuIRD7k3qhVb3mnwhS2D+wKxK6HyTdiIg+BjBQCHgNupP+WQgfS6HmJyaY5LWjiRQLifCpxzNuaEo88Vm13v0yzXf+lgHfQGg2D5S8LlbUeEFjyd1lM94XtOK7k9jSsnjIuw6TafxGjZg2nz6BdkJChpe/uBi+xlU3hl7VjeGebTNVlIw0+ZJHB0j3RIbS8KJfIF9qSfJsKY7JwSR7dW+JOOBt55G3tCgoEAPZj+DVXPOWV+Ahgme0s+Mwwq5DReThQIDAQAB",
+  "permissions": [
+    "contextMenus",
+    "nativeMessaging",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "*://youtube.com/*",
+    "*://www.youtube.com/*",
+    "*://m.youtube.com/*",
+    "*://youtu.be/*",
+    "*://tiktok.com/*",
+    "*://www.tiktok.com/*",
+    "*://m.tiktok.com/*",
+    "*://vm.tiktok.com/*",
+    "*://vt.tiktok.com/*",
+    "*://instagram.com/*",
+    "*://www.instagram.com/*",
+    "*://m.instagram.com/*",
+    "*://x.com/*",
+    "*://www.x.com/*",
+    "*://mobile.x.com/*",
+    "*://twitter.com/*",
+    "*://www.twitter.com/*",
+    "*://mobile.twitter.com/*",
+    "*://soundcloud.com/*",
+    "*://www.soundcloud.com/*",
+    "*://m.soundcloud.com/*",
+    "*://on.soundcloud.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "DLP",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://youtube.com/*",
+        "*://www.youtube.com/*",
+        "*://m.youtube.com/*",
+        "*://tiktok.com/*",
+        "*://www.tiktok.com/*",
+        "*://m.tiktok.com/*",
+        "*://vm.tiktok.com/*",
+        "*://vt.tiktok.com/*",
+        "*://instagram.com/*",
+        "*://www.instagram.com/*",
+        "*://m.instagram.com/*",
+        "*://x.com/*",
+        "*://www.x.com/*",
+        "*://mobile.x.com/*",
+        "*://twitter.com/*",
+        "*://www.twitter.com/*",
+        "*://mobile.twitter.com/*",
+        "*://soundcloud.com/*",
+        "*://www.soundcloud.com/*",
+        "*://m.soundcloud.com/*",
+        "*://on.soundcloud.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

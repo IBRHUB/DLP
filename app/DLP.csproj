@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>DLP</AssemblyName>
+    <RootNamespace>DLP</RootNamespace>
+    <Authors>IBRAHIM</Authors>
+    <Company>IBRHUB</Company>
+    <Product>DLP</Product>
+    <Description>DLP browser download bridge</Description>
+    <Copyright>Copyright (c) 2026 IBRHUB. Developed by IBRAHIM. Source: github.com/IBRHUB/DLP</Copyright>
+    <PackageProjectUrl>https://ibrhub.net</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/IBRHUB/DLP</RepositoryUrl>
+    <PublishDir>$(MSBuildThisFileDirectory)..\dist\app\</PublishDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\tools\yt-dlp.exe" Link="tools\yt-dlp.exe" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\tools\yt-dlp.exe')" />
+    <None Include="..\tools\ffmpeg.exe" Link="tools\ffmpeg.exe" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\tools\ffmpeg.exe')" />
+  </ItemGroup>
+</Project>

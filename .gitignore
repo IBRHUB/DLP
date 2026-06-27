@@ -1,0 +1,13 @@
+bin/
+obj/
+dist/
+.vs/
+*.user
+*.suo
+*.log
+installer/build_installer.ps1
+installer/diagnose_brave.ps1
+installer/DLP-Setup.ps1
+installer/install_native_host.ps1
+installer/setup_brave.ps1
+installer/test_native_host.ps1

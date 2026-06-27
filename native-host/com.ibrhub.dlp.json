@@ -1,0 +1,9 @@
+{
+  "name": "com.ibrhub.dlp",
+  "description": "DLP Native Messaging Host",
+  "path": "ABSOLUTE_PATH_TO_DLP.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://EXTENSION_ID_HERE/"
+  ]
+}
