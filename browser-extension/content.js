@@ -59,6 +59,70 @@
     return null;
   }
 
+  function isYouTubeShortsPage() {
+    return getPlatform() === "youtube" && location.pathname.startsWith("/shorts/");
+  }
+
+  function toAbsoluteUrl(href) {
+    try {
+      return new URL(href, location.origin).href;
+    } catch {
+      return null;
+    }
+  }
+
+  function isTikTokVideoUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return /\/@[^/]+\/video\/\d+/i.test(parsed.pathname)
+        || ["vm.tiktok.com", "vt.tiktok.com"].includes(parsed.hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  }
+
+  function isXStatusUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return /\/[^/]+\/status\/\d+/i.test(parsed.pathname);
+    } catch {
+      return false;
+    }
+  }
+
+  function normalizeXStatusUrl(url) {
+    try {
+      const parsed = new URL(url);
+      const match = parsed.pathname.match(/^\/([^/]+)\/status\/(\d+)/i);
+
+      if (!match) {
+        return null;
+      }
+
+      return `${parsed.origin}/${match[1]}/status/${match[2]}`;
+    } catch {
+      return null;
+    }
+  }
+
+  function findFirstMatchingLink(container, predicate) {
+    if (!container) {
+      return null;
+    }
+
+    const links = Array.from(container.querySelectorAll("a[href]"));
+
+    for (const link of links) {
+      const url = toAbsoluteUrl(link.getAttribute("href"));
+
+      if (url && predicate(url)) {
+        return url;
+      }
+    }
+
+    return null;
+  }
+
   function isSupportedVideoPage() {
     const platform = getPlatform();
 
@@ -67,7 +131,7 @@
         return new URLSearchParams(location.search).has("v");
       }
 
-      return location.pathname.startsWith("/shorts/");
+      return isYouTubeShortsPage();
     }
 
     if (platform === "tiktok") {
@@ -75,7 +139,8 @@
 
       return path.includes("/video/")
         || location.hostname.toLowerCase() === "vm.tiktok.com"
-        || location.hostname.toLowerCase() === "vt.tiktok.com";
+        || location.hostname.toLowerCase() === "vt.tiktok.com"
+        || Boolean(getTikTokVideoUrl());
     }
 
     if (platform === "instagram") {
@@ -87,7 +152,8 @@
     }
 
     if (platform === "x") {
-      return location.pathname.toLowerCase().includes("/status/");
+      return location.pathname.toLowerCase().includes("/status/")
+        || Boolean(getXStatusUrl());
     }
 
     if (platform === "soundcloud") {
@@ -101,6 +167,16 @@
   }
 
   function getDownloadUrl() {
+    const platform = getPlatform();
+
+    if (platform === "tiktok") {
+      return getTikTokVideoUrl() || location.href;
+    }
+
+    if (platform === "x") {
+      return getXStatusUrl() || location.href;
+    }
+
     return location.href;
   }
 
@@ -124,6 +200,17 @@
   }
 
   function getYouTubePlayerElement() {
+    if (isYouTubeShortsPage()) {
+      const activeReel = document.querySelector("ytd-reel-video-renderer[is-active]");
+
+      return activeReel?.querySelector("video")
+        || getVisibleVideo()
+        || activeReel?.querySelector("#movie_player")
+        || activeReel?.querySelector(".html5-video-player")
+        || activeReel
+        || document.querySelector("#shorts-player");
+    }
+
     return document.querySelector("ytd-reel-video-renderer[is-active] #movie_player")
       || document.querySelector("ytd-reel-video-renderer[is-active] .html5-video-player")
       || document.querySelector("ytd-reel-video-renderer[is-active] #player")
@@ -152,12 +239,56 @@
       || video.parentElement;
   }
 
+  function getTikTokVideoUrl() {
+    if (isTikTokVideoUrl(location.href)) {
+      return location.href;
+    }
+
+    const video = getVisibleVideo();
+
+    if (!video) {
+      return null;
+    }
+
+    const container = video.closest('[data-e2e="browse-video"]')
+      || video.closest('[data-e2e="feed-video"]')
+      || video.closest('[data-e2e="video-container"]')
+      || video.closest('[class*="DivItemContainer"]')
+      || video.closest('[class*="VideoContainer"]')
+      || video.closest('[class*="PlayerContainer"]')
+      || video.parentElement;
+
+    return findFirstMatchingLink(container, isTikTokVideoUrl)
+      || findFirstMatchingLink(document, isTikTokVideoUrl);
+  }
+
   function getInstagramPlayerElement() {
     return getVisibleVideo();
   }
 
   function getXPlayerElement() {
     return getVisibleVideo();
+  }
+
+  function getXStatusUrl() {
+    if (isXStatusUrl(location.href)) {
+      return normalizeXStatusUrl(location.href);
+    }
+
+    const video = getVisibleVideo();
+
+    if (!video) {
+      return null;
+    }
+
+    const container = video.closest("article")
+      || video.closest('[data-testid="tweet"]')
+      || video.closest('[role="article"]')
+      || video.parentElement;
+
+    const statusUrl = findFirstMatchingLink(container, isXStatusUrl);
+
+    return statusUrl ? normalizeXStatusUrl(statusUrl) : null;
   }
 
   function getSoundCloudPlayerElement() {
@@ -327,7 +458,8 @@
   }
 
   function isFixedOverlayPlatform(platform) {
-    return platform === "tiktok"
+    return (platform === "youtube" && isYouTubeShortsPage())
+      || platform === "tiktok"
       || platform === "instagram"
       || platform === "x"
       || platform === "soundcloud";
@@ -364,7 +496,7 @@
     button.style.bottom = "auto";
   }
 
-  function placeTikTokButton(button, target) {
+  function placeTopCenterButton(button, target) {
     const rect = target.getBoundingClientRect();
 
     if (!isRectVisible(rect)) {
@@ -462,8 +594,8 @@
         document.body.appendChild(button);
       }
 
-      if (platform === "tiktok") {
-        placeTikTokButton(button, player);
+      if (platform === "tiktok" || (platform === "youtube" && isYouTubeShortsPage())) {
+        placeTopCenterButton(button, player);
         return;
       }
 
