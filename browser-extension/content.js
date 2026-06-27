@@ -190,12 +190,12 @@
     return videos
       .filter((video) => {
         const rect = video.getBoundingClientRect();
-        return rect.width >= 120 && rect.height >= 120;
+        return rect.width >= 120 && rect.height >= 120 && isRectVisible(rect);
       })
       .sort((first, second) => {
         const firstRect = first.getBoundingClientRect();
         const secondRect = second.getBoundingClientRect();
-        return (secondRect.width * secondRect.height) - (firstRect.width * firstRect.height);
+        return getVisibleArea(secondRect) - getVisibleArea(firstRect);
       })[0] || null;
   }
 
@@ -472,6 +472,13 @@
       && rect.right > 0
       && rect.top < window.innerHeight
       && rect.left < window.innerWidth;
+  }
+
+  function getVisibleArea(rect) {
+    const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+    const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+
+    return visibleWidth * visibleHeight;
   }
 
   function placeFixedButton(button, target) {
