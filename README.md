@@ -9,6 +9,7 @@ DLP is a Windows 10/11 x64 app and Chromium browser extension for sending suppor
 - Sends the current media URL to the local Windows app
 - Opens the DLP window for manual video/audio download
 - Supports silent download from the extension popup
+- Skips duplicate downloads using media id detection
 - Uses `yt-dlp` for downloads
 - Uses `ffmpeg` when media merging or audio conversion is needed
 
@@ -200,6 +201,7 @@ Manual mode:
 
 - Click the `DLP` overlay button or browser context menu
 - Choose `Download video` or `Download audio`
+- Use `Update yt-dlp` in the app when a site stops working
 
 Silent mode:
 
@@ -207,6 +209,12 @@ Silent mode:
 - Enable `Silent download`
 - Click the `DLP` overlay button
 - DLP downloads directly without opening the app window
+
+Duplicate detection:
+
+- DLP checks the media id before downloading
+- If a file with the same id already exists in `Downloads\DLP`, the download is skipped
+- If the same media is already downloading, the second request is skipped
 
 Download folder:
 
@@ -249,4 +257,3 @@ Download folder:
 ### Build
 
 - Inno Setup: [https://jrsoftware.org/isinfo.php](https://jrsoftware.org/isinfo.php)
-
