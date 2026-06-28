@@ -209,7 +209,8 @@ internal static class NativeMessagingHost
     {
         string requestedUrl = ReadString(root, "url", required: true)!;
         bool silent = ReadBoolean(root, "silent", defaultValue: false);
-        string normalizedUrl = ValidateAndNormalizeUrl(requestedUrl);
+        bool experimental = ReadBoolean(root, "experimental", defaultValue: false);
+        string normalizedUrl = ValidateAndNormalizeUrl(requestedUrl, experimental);
         string appPath = ResolveCurrentAppPath();
 
         ProcessStartInfo startInfo = new()
@@ -238,19 +239,20 @@ internal static class NativeMessagingHost
         }
 
         Log(silent
-            ? $"Started silent DLP download for URL: {normalizedUrl}"
-            : $"Opened DLP window for URL: {normalizedUrl}");
+            ? $"Started silent DLP download for URL: {normalizedUrl} experimental={experimental}"
+            : $"Opened DLP window for URL: {normalizedUrl} experimental={experimental}");
 
         return new
         {
             ok = true,
             action = "download",
             launched = true,
-            silent
+            silent,
+            experimental
         };
     }
 
-    private static string ValidateAndNormalizeUrl(string url)
+    private static string ValidateAndNormalizeUrl(string url, bool experimental)
     {
         if (string.IsNullOrWhiteSpace(url))
         {
@@ -270,7 +272,7 @@ internal static class NativeMessagingHost
         bool hostAllowed = AllowedHosts.Any(host =>
             string.Equals(uri.Host, host, StringComparison.OrdinalIgnoreCase));
 
-        if (!hostAllowed)
+        if (!hostAllowed && !experimental)
         {
             throw new NativeHostException("host_not_allowed", "Only supported video sites are allowed");
         }

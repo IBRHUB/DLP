@@ -11,7 +11,7 @@
     }
 
     body {
-      width: 260px;
+      width: 280px;
       margin: 0;
       background: #fafbfc;
       color: #1f2937;
@@ -49,12 +49,39 @@
       border: 1px solid #c6cfda;
       border-radius: 8px;
       background: #ffffff;
+      margin-bottom: 8px;
     }
 
     .setting-title {
       margin: 0;
       font-size: 13px;
       font-weight: 650;
+    }
+
+    .field {
+      display: grid;
+      gap: 7px;
+      padding: 12px 13px;
+      border: 1px solid #c6cfda;
+      border-radius: 8px;
+      background: #ffffff;
+      margin-bottom: 8px;
+    }
+
+    .field label {
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    select {
+      width: 100%;
+      height: 32px;
+      border: 1px solid #c6cfda;
+      border-radius: 6px;
+      background: #ffffff;
+      color: #1f2937;
+      font: 13px "Segoe UI", Arial, sans-serif;
+      padding: 0 8px;
     }
 
     .switch {
@@ -139,6 +166,41 @@
         <input id="silentDownload" type="checkbox">
         <span class="track"></span>
       </label>
+    </section>
+
+    <section class="setting">
+      <div>
+        <p class="setting-title">Auto hide</p>
+      </div>
+
+      <label class="switch" title="Hide the DLP button after a short idle time">
+        <input id="autoHideOverlay" type="checkbox">
+        <span class="track"></span>
+      </label>
+    </section>
+
+    <section class="setting">
+      <div>
+        <p class="setting-title">Experimental</p>
+      </div>
+
+      <label class="switch" title="Show DLP on HTTPS pages with visible videos">
+        <input id="experimentalAllSites" type="checkbox">
+        <span class="track"></span>
+      </label>
+    </section>
+
+    <section class="field">
+      <label for="overlayPosition">Button place</label>
+      <select id="overlayPosition">
+        <option value="auto">Auto</option>
+        <option value="top-right">Top right</option>
+        <option value="top-center">Top center</option>
+        <option value="top-left">Top left</option>
+        <option value="bottom-right">Bottom right</option>
+        <option value="bottom-center">Bottom center</option>
+        <option value="bottom-left">Bottom left</option>
+      </select>
     </section>
 
     <div id="status" class="status">Loading</div>

@@ -1,8 +1,14 @@
 const DEFAULT_SETTINGS = {
-  silentDownload: false
+  silentDownload: false,
+  autoHideOverlay: true,
+  overlayPosition: "auto",
+  experimentalAllSites: false
 };
 
 const silentDownloadInput = document.getElementById("silentDownload");
+const autoHideOverlayInput = document.getElementById("autoHideOverlay");
+const experimentalAllSitesInput = document.getElementById("experimentalAllSites");
+const overlayPositionInput = document.getElementById("overlayPosition");
 const statusElement = document.getElementById("status");
 const versionElement = document.getElementById("version");
 const ibrahimLink = document.getElementById("ibrahimLink");
@@ -14,9 +20,12 @@ function setStatus(text) {
   statusElement.textContent = text;
 }
 
-function render(settings) {
+function render(settings, statusText = "Ready") {
   silentDownloadInput.checked = Boolean(settings.silentDownload);
-  setStatus(settings.silentDownload ? "On" : "Off");
+  autoHideOverlayInput.checked = Boolean(settings.autoHideOverlay);
+  experimentalAllSitesInput.checked = Boolean(settings.experimentalAllSites);
+  overlayPositionInput.value = settings.overlayPosition || DEFAULT_SETTINGS.overlayPosition;
+  setStatus(statusText);
 }
 
 chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
@@ -29,17 +38,31 @@ chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => {
 });
 
 silentDownloadInput.addEventListener("change", () => {
-  const silentDownload = silentDownloadInput.checked;
+  saveSettings({ silentDownload: silentDownloadInput.checked });
+});
 
-  chrome.storage.local.set({ silentDownload }, () => {
+autoHideOverlayInput.addEventListener("change", () => {
+  saveSettings({ autoHideOverlay: autoHideOverlayInput.checked });
+});
+
+experimentalAllSitesInput.addEventListener("change", () => {
+  saveSettings({ experimentalAllSites: experimentalAllSitesInput.checked });
+});
+
+overlayPositionInput.addEventListener("change", () => {
+  saveSettings({ overlayPosition: overlayPositionInput.value });
+});
+
+function saveSettings(changes) {
+  chrome.storage.local.set(changes, () => {
     if (chrome.runtime.lastError) {
       setStatus(chrome.runtime.lastError.message);
       return;
     }
 
-    render({ silentDownload });
+    chrome.storage.local.get(DEFAULT_SETTINGS, (settings) => render(settings, "Saved"));
   });
-});
+}
 
 function openTab(event, url) {
   event.preventDefault();

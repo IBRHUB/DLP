@@ -33,7 +33,8 @@
     "*://soundcloud.com/*",
     "*://www.soundcloud.com/*",
     "*://m.soundcloud.com/*",
-    "*://on.soundcloud.com/*"
+    "*://on.soundcloud.com/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -45,27 +46,7 @@
   "content_scripts": [
     {
       "matches": [
-        "*://youtube.com/*",
-        "*://www.youtube.com/*",
-        "*://m.youtube.com/*",
-        "*://tiktok.com/*",
-        "*://www.tiktok.com/*",
-        "*://m.tiktok.com/*",
-        "*://vm.tiktok.com/*",
-        "*://vt.tiktok.com/*",
-        "*://instagram.com/*",
-        "*://www.instagram.com/*",
-        "*://m.instagram.com/*",
-        "*://x.com/*",
-        "*://www.x.com/*",
-        "*://mobile.x.com/*",
-        "*://twitter.com/*",
-        "*://www.twitter.com/*",
-        "*://mobile.twitter.com/*",
-        "*://soundcloud.com/*",
-        "*://www.soundcloud.com/*",
-        "*://m.soundcloud.com/*",
-        "*://on.soundcloud.com/*"
+        "https://*/*"
       ],
       "js": [
         "content.js"

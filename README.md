@@ -13,6 +13,7 @@ Architecture flow: [docs/DLP_FLOW.md](docs/DLP_FLOW.md)
 - Supports silent download from the extension popup
 - Skips duplicate downloads using media id detection
 - Supports app self-update from GitHub Releases
+- Supports optional Experimental mode for HTTPS pages with visible videos
 - Uses `yt-dlp` for downloads
 - Uses `ffmpeg` when media merging or audio conversion is needed
 
@@ -214,6 +215,13 @@ Silent mode:
 - Click the `DLP` overlay button
 - DLP downloads directly without opening the app window
 
+Experimental mode:
+
+- Open the extension popup
+- Enable `Experimental`
+- DLP shows on HTTPS pages with visible videos
+- Unsupported sites may fail if `yt-dlp` cannot read the page
+
 Duplicate detection:
 
 - DLP checks the media id before downloading
@@ -246,6 +254,7 @@ Download folder:
 - Antivirus tools may quarantine `yt-dlp.exe` or `ffmpeg.exe`
 - Native Messaging fails if the extension ID does not match `allowed_origins`
 - Normal per-user installers cannot silently install unpacked Chromium extensions
+- Experimental mode requires broader browser site access and is off by default
 - After reloading the extension, refresh already-open media tabs
 - Moving `DLP.exe` manually breaks Native Messaging because the manifest uses an absolute path
 - The app requires Microsoft .NET 8 Windows Desktop Runtime x64 because it is framework-dependent

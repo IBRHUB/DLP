@@ -1,13 +1,26 @@
 (function () {
   const BUTTON_ID = "dlp-video-download-button";
   const STYLE_ID = "dlp-video-download-style";
+  const TOAST_ID = "dlp-video-download-toast";
   const BUTTON_WIDTH = 58;
+  const BUTTON_HEIGHT = 24;
   const BUTTON_OFFSET = 12;
+  const AUTO_HIDE_DELAY_MS = 2600;
+  const DEFAULT_SETTINGS = {
+    silentDownload: false,
+    autoHideOverlay: true,
+    overlayPosition: "auto",
+    experimentalAllSites: false
+  };
 
   let lastUrl = location.href;
   let refreshTimer = null;
+  let hideTimer = null;
+  let toastTimer = null;
+  let lastActivityAt = 0;
   let extensionActive = true;
   let observer = null;
+  let settings = { ...DEFAULT_SETTINGS };
   let tikTokScriptUrlCache = null;
   let tikTokScriptUrlCacheAt = 0;
   let tikTokItemsCache = null;
@@ -30,11 +43,61 @@
   function deactivateExtensionUi() {
     extensionActive = false;
     window.clearTimeout(refreshTimer);
+    window.clearTimeout(hideTimer);
+    window.clearTimeout(toastTimer);
     removeButton();
 
     if (observer) {
       observer.disconnect();
     }
+  }
+
+  function loadSettings(callback) {
+    if (!hasRuntime() || !chrome.storage || !chrome.storage.local) {
+      if (callback) {
+        callback();
+      }
+
+      return;
+    }
+
+    chrome.storage.local.get(DEFAULT_SETTINGS, (storedSettings) => {
+      if (chrome.runtime.lastError) {
+        console.log("DLP settings error:", chrome.runtime.lastError.message);
+      } else {
+        settings = { ...DEFAULT_SETTINGS, ...storedSettings };
+      }
+
+      if (callback) {
+        callback();
+      }
+    });
+  }
+
+  function watchSettingsChanges() {
+    if (!hasRuntime() || !chrome.storage || !chrome.storage.onChanged) {
+      return;
+    }
+
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== "local") {
+        return;
+      }
+
+      let changed = false;
+
+      for (const key of Object.keys(DEFAULT_SETTINGS)) {
+        if (Object.prototype.hasOwnProperty.call(changes, key)) {
+          settings[key] = changes[key].newValue ?? DEFAULT_SETTINGS[key];
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        showButtonForInteraction();
+        scheduleRefresh();
+      }
+    });
   }
 
   function getPlatform() {
@@ -466,7 +529,7 @@
       return !ignoredPaths.some((ignoredPath) => path === ignoredPath || path.startsWith(`${ignoredPath}/`));
     }
 
-    return false;
+    return Boolean(settings.experimentalAllSites && location.protocol === "https:" && getVisibleVideo());
   }
 
   function getDownloadUrl() {
@@ -480,7 +543,37 @@
       return getXStatusUrl() || location.href;
     }
 
+    if (!platform && settings.experimentalAllSites) {
+      return getExperimentalVideoUrl() || location.href;
+    }
+
     return location.href;
+  }
+
+  function getExperimentalVideoUrl() {
+    const video = getVisibleVideo();
+
+    if (!video) {
+      return null;
+    }
+
+    const candidate = video.currentSrc || video.src || video.querySelector("source[src]")?.src;
+
+    if (!candidate) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(candidate, location.href);
+
+      if (parsed.protocol !== "https:") {
+        return null;
+      }
+
+      return parsed.href;
+    } catch {
+      return null;
+    }
   }
 
   function getVisibleVideo() {
@@ -666,6 +759,10 @@
       return getSoundCloudPlayerElement();
     }
 
+    if (settings.experimentalAllSites) {
+      return getVisibleVideo();
+    }
+
     return null;
   }
 
@@ -713,6 +810,59 @@
         opacity: 0.62;
         transform: none;
       }
+
+      #${BUTTON_ID}[data-dlp-status="sending"] {
+        background: rgba(22, 101, 216, 0.34);
+        border-color: rgba(147, 197, 253, 0.7);
+      }
+
+      #${BUTTON_ID}[data-dlp-status="success"] {
+        background: rgba(22, 163, 74, 0.36);
+        border-color: rgba(134, 239, 172, 0.72);
+      }
+
+      #${BUTTON_ID}[data-dlp-status="error"] {
+        background: rgba(220, 38, 38, 0.36);
+        border-color: rgba(252, 165, 165, 0.72);
+      }
+
+      #${BUTTON_ID}.dlp-overlay-hidden {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-4px);
+      }
+
+      #${TOAST_ID} {
+        position: fixed;
+        right: 18px;
+        bottom: 18px;
+        z-index: 2147483647;
+        max-width: min(320px, calc(100vw - 36px));
+        padding: 9px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        border-radius: 7px;
+        background: rgba(17, 24, 39, 0.9);
+        color: #fff;
+        font: 600 12px/1.35 Arial, sans-serif;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+        opacity: 0;
+        transform: translateY(8px);
+        pointer-events: none;
+        transition: opacity 160ms ease, transform 160ms ease;
+      }
+
+      #${TOAST_ID}.dlp-toast-show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      #${TOAST_ID}.dlp-toast-success {
+        border-color: rgba(134, 239, 172, 0.55);
+      }
+
+      #${TOAST_ID}.dlp-toast-error {
+        border-color: rgba(252, 165, 165, 0.55);
+      }
     `;
 
     document.documentElement.appendChild(style);
@@ -722,14 +872,116 @@
     button.textContent = text;
   }
 
+  function setButtonStatus(button, status, text) {
+    button.dataset.dlpStatus = status;
+    setButtonText(button, text);
+  }
+
+  function resetButtonStatus(button) {
+    setButtonStatus(button, "idle", "DLP");
+    button.disabled = false;
+    syncAutoHideAfterPlacement(button);
+  }
+
+  function getToast() {
+    let toast = document.getElementById(TOAST_ID);
+
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = TOAST_ID;
+      document.body.appendChild(toast);
+    }
+
+    return toast;
+  }
+
+  function showToast(message, type) {
+    if (!document.body) {
+      return;
+    }
+
+    const toast = getToast();
+    toast.textContent = message;
+    toast.className = `dlp-toast-show dlp-toast-${type}`;
+
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+      toast.classList.remove("dlp-toast-show");
+    }, 2400);
+  }
+
+  function shouldAutoHideButton(button) {
+    return Boolean(
+      settings.autoHideOverlay
+        && button
+        && !button.disabled
+        && !button.matches(":hover")
+    );
+  }
+
+  function scheduleAutoHide(button) {
+    window.clearTimeout(hideTimer);
+
+    if (!shouldAutoHideButton(button)) {
+      button?.classList.remove("dlp-overlay-hidden");
+      return;
+    }
+
+    hideTimer = window.setTimeout(() => {
+      if (!shouldAutoHideButton(button)) {
+        button?.classList.remove("dlp-overlay-hidden");
+        return;
+      }
+
+      button.classList.add("dlp-overlay-hidden");
+    }, AUTO_HIDE_DELAY_MS);
+  }
+
+  function showButtonForInteraction(button) {
+    const targetButton = button || document.getElementById(BUTTON_ID);
+
+    if (!targetButton) {
+      return;
+    }
+
+    targetButton.classList.remove("dlp-overlay-hidden");
+    scheduleAutoHide(targetButton);
+  }
+
+  function syncAutoHideAfterPlacement(button) {
+    if (!settings.autoHideOverlay) {
+      window.clearTimeout(hideTimer);
+      button.classList.remove("dlp-overlay-hidden");
+      return;
+    }
+
+    if (!button.classList.contains("dlp-overlay-hidden")) {
+      scheduleAutoHide(button);
+    }
+  }
+
+  function handlePageActivity() {
+    const now = Date.now();
+
+    if (now - lastActivityAt < 180) {
+      return;
+    }
+
+    lastActivityAt = now;
+    showButtonForInteraction();
+  }
+
   function sendDownload(button) {
     if (!hasRuntime()) {
+      showToast("Reload the DLP extension", "error");
       deactivateExtensionUi();
       return;
     }
 
-    setButtonText(button, "...");
+    setButtonStatus(button, "sending", "...");
     button.disabled = true;
+    button.classList.remove("dlp-overlay-hidden");
+    showToast("Sending to DLP", "success");
 
     try {
       chrome.runtime.sendMessage(
@@ -744,13 +996,16 @@
           }
 
           if (chrome.runtime.lastError) {
-            setButtonText(button, "ERR");
+            setButtonStatus(button, "error", "ERR");
+            showToast("DLP app connection failed", "error");
             console.log("DLP extension error:", chrome.runtime.lastError.message);
           } else if (!response || response.ok === false) {
-            setButtonText(button, "ERR");
+            setButtonStatus(button, "error", "ERR");
+            showToast(response?.message || "DLP request failed", "error");
             console.log("DLP native host response:", response);
           } else {
-            setButtonText(button, "OK");
+            setButtonStatus(button, "success", "OK");
+            showToast("Sent to DLP", "success");
           }
 
           window.setTimeout(() => {
@@ -758,12 +1013,12 @@
               return;
             }
 
-            setButtonText(button, "DLP");
-            button.disabled = false;
+            resetButtonStatus(button);
           }, 1600);
         }
       );
     } catch (error) {
+      showToast("Reload the DLP extension", "error");
       console.log("DLP extension context ended:", error && error.message ? error.message : error);
       deactivateExtensionUi();
     }
@@ -775,7 +1030,15 @@
     button.type = "button";
     button.title = "Download with DLP";
     button.setAttribute("aria-label", "Download with DLP");
-    setButtonText(button, "DLP");
+    setButtonStatus(button, "idle", "DLP");
+
+    button.addEventListener("mouseenter", () => {
+      showButtonForInteraction(button);
+    });
+
+    button.addEventListener("mouseleave", () => {
+      scheduleAutoHide(button);
+    });
 
     button.addEventListener("mousedown", (event) => {
       event.preventDefault();
@@ -807,6 +1070,21 @@
       || platform === "soundcloud";
   }
 
+  function getOverlayPosition() {
+    const value = settings.overlayPosition || DEFAULT_SETTINGS.overlayPosition;
+    const allowedPositions = new Set([
+      "auto",
+      "top-right",
+      "top-center",
+      "top-left",
+      "bottom-right",
+      "bottom-center",
+      "bottom-left"
+    ]);
+
+    return allowedPositions.has(value) ? value : DEFAULT_SETTINGS.overlayPosition;
+  }
+
   function isRectVisible(rect) {
     return rect.width > 0
       && rect.height > 0
@@ -821,6 +1099,40 @@
     const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
 
     return visibleWidth * visibleHeight;
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function placeButtonAtPosition(button, target, position) {
+    const rect = target.getBoundingClientRect();
+
+    if (!isRectVisible(rect)) {
+      button.style.display = "none";
+      return;
+    }
+
+    let top = rect.top + BUTTON_OFFSET;
+    let left = rect.right - BUTTON_WIDTH - BUTTON_OFFSET;
+
+    if (position.startsWith("bottom")) {
+      top = rect.bottom - BUTTON_HEIGHT - BUTTON_OFFSET;
+    }
+
+    if (position.endsWith("left")) {
+      left = rect.left + BUTTON_OFFSET;
+    } else if (position.endsWith("center")) {
+      left = rect.left + (rect.width / 2) - (BUTTON_WIDTH / 2);
+    }
+
+    button.style.display = "";
+    button.style.position = "fixed";
+    button.style.top = `${clamp(top, BUTTON_OFFSET, window.innerHeight - BUTTON_HEIGHT - BUTTON_OFFSET)}px`;
+    button.style.left = `${clamp(left, BUTTON_OFFSET, window.innerWidth - BUTTON_WIDTH - BUTTON_OFFSET)}px`;
+    button.style.right = "auto";
+    button.style.bottom = "auto";
+    syncAutoHideAfterPlacement(button);
   }
 
   function placeFixedButton(button, target) {
@@ -843,6 +1155,7 @@
     button.style.left = `${left}px`;
     button.style.right = "auto";
     button.style.bottom = "auto";
+    syncAutoHideAfterPlacement(button);
   }
 
   function placeTopCenterButton(button, target) {
@@ -865,6 +1178,7 @@
     button.style.left = `${left}px`;
     button.style.right = "auto";
     button.style.bottom = "auto";
+    syncAutoHideAfterPlacement(button);
   }
 
   function placeSoundCloudButton(button, target) {
@@ -881,12 +1195,14 @@
       button.style.top = `${top}px`;
       button.style.right = `${right}px`;
       button.style.bottom = "auto";
+      syncAutoHideAfterPlacement(button);
       return;
     }
 
     button.style.top = "auto";
     button.style.right = "18px";
     button.style.bottom = "74px";
+    syncAutoHideAfterPlacement(button);
   }
 
   function placeAnchoredButton(button, player) {
@@ -905,6 +1221,8 @@
     if (button.parentElement !== player) {
       player.appendChild(button);
     }
+
+    syncAutoHideAfterPlacement(button);
   }
 
   function ensureButton() {
@@ -937,6 +1255,17 @@
 
     if (!button) {
       button = createButton();
+    }
+
+    const overlayPosition = getOverlayPosition();
+
+    if (overlayPosition !== "auto") {
+      if (button.parentElement !== document.body) {
+        document.body.appendChild(button);
+      }
+
+      placeButtonAtPosition(button, player, overlayPosition);
+      return;
     }
 
     if (isFixedOverlayPlatform(platform)) {
@@ -979,6 +1308,7 @@
     const notify = () => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
+        showButtonForInteraction();
         scheduleRefresh();
       }
     };
@@ -1005,6 +1335,12 @@
     subtree: true
   });
 
+  document.addEventListener("mousemove", handlePageActivity, true);
+  document.addEventListener("touchstart", handlePageActivity, true);
+  document.addEventListener("keydown", handlePageActivity, true);
+  window.addEventListener("scroll", handlePageActivity, true);
+
+  watchSettingsChanges();
   watchUrlChanges();
-  scheduleRefresh();
+  loadSettings(scheduleRefresh);
 })();

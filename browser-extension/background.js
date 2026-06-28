@@ -1,11 +1,63 @@
 const HOST_NAME = "com.ibrhub.dlp";
 const MENU_ID = "dlp-download";
 const DEFAULT_SETTINGS = {
-  silentDownload: false
+  silentDownload: false,
+  autoHideOverlay: true,
+  overlayPosition: "auto",
+  experimentalAllSites: false
 };
+
+const SUPPORTED_DOCUMENT_URL_PATTERNS = [
+  "*://youtube.com/*",
+  "*://www.youtube.com/*",
+  "*://m.youtube.com/*",
+  "*://youtu.be/*",
+  "*://tiktok.com/*",
+  "*://www.tiktok.com/*",
+  "*://m.tiktok.com/*",
+  "*://vm.tiktok.com/*",
+  "*://vt.tiktok.com/*",
+  "*://instagram.com/*",
+  "*://www.instagram.com/*",
+  "*://m.instagram.com/*",
+  "*://x.com/*",
+  "*://www.x.com/*",
+  "*://mobile.x.com/*",
+  "*://twitter.com/*",
+  "*://www.twitter.com/*",
+  "*://mobile.twitter.com/*",
+  "*://soundcloud.com/*",
+  "*://www.soundcloud.com/*",
+  "*://m.soundcloud.com/*",
+  "*://on.soundcloud.com/*"
+];
+
+const EXPERIMENTAL_DOCUMENT_URL_PATTERNS = [
+  "https://*/*"
+];
 
 function getSettings(callback) {
   chrome.storage.local.get(DEFAULT_SETTINGS, callback);
+}
+
+function getSafeHttpsUrl(url) {
+  if (!url) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function getContextMenuUrl(info, tab) {
+  return info.linkUrl
+    || getSafeHttpsUrl(info.srcUrl)
+    || info.pageUrl
+    || (tab && tab.url);
 }
 
 function sendDownloadToNativeHost(url, callback) {
@@ -31,7 +83,8 @@ function sendDownloadToNativeHost(url, callback) {
       url,
       source: "chrome-extension",
       timestamp: new Date().toISOString(),
-      silent: Boolean(settings.silentDownload)
+      silent: Boolean(settings.silentDownload),
+      experimental: Boolean(settings.experimentalAllSites)
     };
 
     chrome.runtime.sendNativeMessage(HOST_NAME, payload, (response) => {
@@ -61,38 +114,21 @@ function sendDownloadToNativeHost(url, callback) {
 }
 
 function createContextMenu() {
-  chrome.contextMenus.create({
-    id: MENU_ID,
-    title: "Download with DLP",
-    contexts: ["page", "link", "video"],
-    documentUrlPatterns: [
-      "*://youtube.com/*",
-      "*://www.youtube.com/*",
-      "*://m.youtube.com/*",
-      "*://youtu.be/*",
-      "*://tiktok.com/*",
-      "*://www.tiktok.com/*",
-      "*://m.tiktok.com/*",
-      "*://vm.tiktok.com/*",
-      "*://vt.tiktok.com/*",
-      "*://instagram.com/*",
-      "*://www.instagram.com/*",
-      "*://m.instagram.com/*",
-      "*://x.com/*",
-      "*://www.x.com/*",
-      "*://mobile.x.com/*",
-      "*://twitter.com/*",
-      "*://www.twitter.com/*",
-      "*://mobile.twitter.com/*",
-      "*://soundcloud.com/*",
-      "*://www.soundcloud.com/*",
-      "*://m.soundcloud.com/*",
-      "*://on.soundcloud.com/*"
-    ]
+  getSettings((settings) => {
+    const documentUrlPatterns = settings.experimentalAllSites
+      ? EXPERIMENTAL_DOCUMENT_URL_PATTERNS
+      : SUPPORTED_DOCUMENT_URL_PATTERNS;
+
+    chrome.contextMenus.create({
+      id: MENU_ID,
+      title: "Download with DLP",
+      contexts: ["page", "link", "video"],
+      documentUrlPatterns
+    });
   });
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+function refreshContextMenu() {
   chrome.contextMenus.removeAll(() => {
     if (chrome.runtime.lastError) {
       console.log("DLP context menu cleanup failed:", chrome.runtime.lastError.message);
@@ -100,6 +136,16 @@ chrome.runtime.onInstalled.addListener(() => {
 
     createContextMenu();
   });
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  refreshContextMenu();
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && Object.prototype.hasOwnProperty.call(changes, "experimentalAllSites")) {
+    refreshContextMenu();
+  }
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -107,7 +153,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     return;
   }
 
-  const url = info.linkUrl || info.pageUrl || (tab && tab.url);
+  const url = getContextMenuUrl(info, tab);
 
   sendDownloadToNativeHost(url);
 });
