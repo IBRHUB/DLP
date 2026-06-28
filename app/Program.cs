@@ -1308,6 +1308,20 @@ internal static class AppUpdater
         [property: JsonPropertyName("digest")] string? Digest);
 }
 
+internal static class DlpTheme
+{
+    public static readonly Color Bg = Color.FromArgb(13, 17, 23);
+    public static readonly Color Surface = Color.FromArgb(21, 27, 35);
+    public static readonly Color SurfaceHover = Color.FromArgb(25, 34, 45);
+    public static readonly Color TextPrimary = Color.FromArgb(242, 247, 255);
+    public static readonly Color TextSecondary = Color.FromArgb(183, 197, 216);
+    public static readonly Color Border = Color.FromArgb(49, 65, 85);
+    public static readonly Color BorderStrong = Color.FromArgb(73, 97, 120);
+    public static readonly Color Accent = Color.FromArgb(88, 166, 255);
+    public static readonly Color AccentActive = Color.FromArgb(47, 129, 247);
+    public static readonly Color DisabledText = Color.FromArgb(111, 126, 143);
+}
+
 internal sealed class DownloadForm : Form
 {
     private static readonly Regex ProgressRegex = new(@"(?<percent>\d{1,3}(?:\.\d+)?)%", RegexOptions.Compiled);
@@ -1324,8 +1338,7 @@ internal sealed class DownloadForm : Form
     private readonly Button _videoButton = new();
     private readonly Button _audioButton = new();
     private readonly Button _openFolderButton = new();
-    private readonly Button _updateAppButton = new();
-    private readonly Button _updateYtDlpButton = new();
+    private readonly Button _updateButton = new();
 
     private Process? _downloadProcess;
     private bool _isPreparingDownload;
@@ -1371,19 +1384,22 @@ internal sealed class DownloadForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = true;
-        Width = 660;
-        Height = 292;
-        BackColor = Color.FromArgb(250, 251, 252);
+        Width = 500;
+        Height = 430;
+        MinimumSize = new Size(500, 430);
+        BackColor = DlpTheme.Bg;
         Font = new Font("Segoe UI", 10F);
 
         TableLayoutPanel root = new()
         {
             Dock = DockStyle.Fill,
+            BackColor = DlpTheme.Bg,
             Padding = new Padding(24, 22, 24, 18),
-            RowCount = 6,
+            RowCount = 7,
             ColumnCount = 1
         };
 
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1395,9 +1411,10 @@ internal sealed class DownloadForm : Form
         {
             Dock = DockStyle.Top,
             AutoSize = true,
+            BackColor = DlpTheme.Bg,
             ColumnCount = 1,
             RowCount = 2,
-            Margin = new Padding(0, 0, 0, 14)
+            Margin = new Padding(0, 0, 0, 18)
         };
 
         urlPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1408,7 +1425,7 @@ internal sealed class DownloadForm : Form
             Text = "URL",
             AutoSize = true,
             Font = new Font(Font.FontFamily, 9F, FontStyle.Bold),
-            ForeColor = Color.FromArgb(55, 65, 81),
+            ForeColor = DlpTheme.TextPrimary,
             Margin = new Padding(0, 0, 0, 5)
         };
 
@@ -1417,71 +1434,82 @@ internal sealed class DownloadForm : Form
             Text = _url,
             ReadOnly = true,
             BorderStyle = BorderStyle.FixedSingle,
-            BackColor = Color.White,
-            ForeColor = Color.FromArgb(31, 41, 55),
+            BackColor = DlpTheme.Surface,
+            ForeColor = DlpTheme.TextPrimary,
             Dock = DockStyle.Top,
-            Height = 32,
+            Height = 34,
             Margin = new Padding(0)
         };
 
         urlPanel.Controls.Add(urlCaption);
         urlPanel.Controls.Add(urlBox);
 
-        TableLayoutPanel folderRow = new()
+        Label downloadCaption = new()
         {
+            Text = "Download",
             Dock = DockStyle.Top,
             AutoSize = true,
-            ColumnCount = 4,
-            RowCount = 1,
-            Margin = new Padding(0, 0, 0, 18)
+            Font = new Font(Font.FontFamily, 10F, FontStyle.Bold),
+            ForeColor = DlpTheme.TextPrimary,
+            Margin = new Padding(0, 0, 0, 8)
         };
-
-        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        folderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-
-        Label folderLabel = new()
-        {
-            Text = $"Saves to {_downloadDirectory}",
-            AutoSize = false,
-            Dock = DockStyle.Fill,
-            Height = 36,
-            TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = Color.FromArgb(75, 85, 99),
-            Margin = new Padding(0, 0, 12, 0)
-        };
-
-        ConfigureSecondaryButton(_openFolderButton, "Open folder", (_, _) => OpenDownloadFolder());
-        ConfigureSecondaryButton(_updateAppButton, "Update app", async (_, _) => await UpdateAppAsync());
-        ConfigureSecondaryButton(_updateYtDlpButton, "Update yt-dlp", async (_, _) => await UpdateYtDlpAsync());
-
-        folderRow.Controls.Add(folderLabel, 0, 0);
-        folderRow.Controls.Add(_openFolderButton, 1, 0);
-        folderRow.Controls.Add(_updateAppButton, 2, 0);
-        folderRow.Controls.Add(_updateYtDlpButton, 3, 0);
 
         TableLayoutPanel actions = new()
         {
             Dock = DockStyle.Top,
             AutoSize = true,
+            BackColor = DlpTheme.Bg,
             ColumnCount = 2,
             RowCount = 1,
-            Margin = new Padding(0, 0, 0, 16)
+            Margin = new Padding(0, 0, 0, 18)
         };
 
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
 
-        ConfigurePrimaryButton(_videoButton, "Download Video", async (_, _) => await StartDownloadAsync(DownloadKind.Video));
-        ConfigurePrimaryButton(_audioButton, "Download Audio", async (_, _) => await StartDownloadAsync(DownloadKind.Audio));
+        ConfigurePrimaryButton(_videoButton, "Video", async (_, _) => await StartDownloadAsync(DownloadKind.Video));
+        ConfigurePrimaryButton(_audioButton, "Audio", async (_, _) => await StartDownloadAsync(DownloadKind.Audio));
+        _videoButton.Margin = new Padding(0, 0, 6, 0);
+        _audioButton.Margin = new Padding(6, 0, 0, 0);
 
         actions.Controls.Add(_videoButton, 0, 0);
         actions.Controls.Add(_audioButton, 1, 0);
 
+        TableLayoutPanel folderPanel = new()
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            BackColor = DlpTheme.Bg,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = new Padding(0, 0, 0, 18)
+        };
+
+        folderPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        folderPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        Label folderPath = new()
+        {
+            Text = _downloadDirectory,
+            AutoSize = false,
+            Dock = DockStyle.Top,
+            Height = 22,
+            TextAlign = ContentAlignment.TopLeft,
+            ForeColor = DlpTheme.TextSecondary,
+            Margin = new Padding(0, 0, 0, 8)
+        };
+
+        ConfigureSecondaryButton(_openFolderButton, "Open folder", (_, _) => OpenDownloadFolder());
+        ConfigureSecondaryButton(_updateButton, "Update", async (_, _) => await UpdateAllAsync());
+
+        folderPanel.Controls.Add(folderPath, 0, 0);
+        folderPanel.Controls.Add(_openFolderButton, 0, 1);
+
         _progressBar.Dock = DockStyle.Top;
         _progressBar.Height = 10;
         _progressBar.Style = ProgressBarStyle.Continuous;
+        _progressBar.BackColor = DlpTheme.Surface;
+        _progressBar.ForeColor = DlpTheme.AccentActive;
         _progressBar.Margin = new Padding(0, 0, 0, 12);
         _progressBar.Visible = false;
 
@@ -1489,41 +1517,82 @@ internal sealed class DownloadForm : Form
         _statusLabel.AutoSize = false;
         _statusLabel.Dock = DockStyle.Top;
         _statusLabel.Height = 28;
-        _statusLabel.ForeColor = Color.FromArgb(44, 52, 62);
+        _statusLabel.ForeColor = DlpTheme.TextSecondary;
+
+        TableLayoutPanel footerShell = new()
+        {
+            Dock = DockStyle.Bottom,
+            AutoSize = true,
+            BackColor = DlpTheme.Bg,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = new Padding(0, 0, 0, 0)
+        };
+
+        footerShell.RowStyles.Add(new RowStyle(SizeType.Absolute, 1));
+        footerShell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        Panel footerDivider = new()
+        {
+            Dock = DockStyle.Top,
+            Height = 1,
+            BackColor = DlpTheme.Border,
+            Margin = new Padding(0, 0, 0, 12)
+        };
 
         TableLayoutPanel footer = new()
         {
-            Dock = DockStyle.Top,
+            Dock = DockStyle.Bottom,
             AutoSize = true,
+            BackColor = DlpTheme.Bg,
             ColumnCount = 5,
             RowCount = 1,
-            Margin = new Padding(0, 2, 0, 0)
+            Margin = new Padding(0, 12, 0, 0)
         };
 
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
 
         Label footerSpacer = new() { AutoSize = true };
         Label footerText = CreateFooterLabel("Developed by ");
         LinkLabel ibrahimLink = CreateFooterLink("IBRAHIM", "https://ibrhub.net");
-        Label sourceText = CreateFooterLabel(" | Source ");
+        Label sourceText = CreateFooterLabel("Source ");
         LinkLabel sourceLink = CreateFooterLink("IBRHUB/DLP", "https://github.com/IBRHUB/DLP");
+        _updateButton.Margin = new Padding(14, 0, 0, 0);
 
         footer.Controls.Add(footerSpacer, 0, 0);
         footer.Controls.Add(footerText, 1, 0);
         footer.Controls.Add(ibrahimLink, 2, 0);
-        footer.Controls.Add(sourceText, 3, 0);
-        footer.Controls.Add(sourceLink, 4, 0);
+        footer.Controls.Add(_updateButton, 4, 0);
+
+        TableLayoutPanel sourceRow = new()
+        {
+            AutoSize = true,
+            BackColor = DlpTheme.Bg,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(8, 0, 0, 0)
+        };
+
+        sourceRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        sourceRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        sourceRow.Controls.Add(sourceText, 0, 0);
+        sourceRow.Controls.Add(sourceLink, 1, 0);
+        footer.Controls.Add(sourceRow, 3, 0);
+
+        footerShell.Controls.Add(footerDivider, 0, 0);
+        footerShell.Controls.Add(footer, 0, 1);
 
         root.Controls.Add(urlPanel);
-        root.Controls.Add(folderRow);
+        root.Controls.Add(downloadCaption);
         root.Controls.Add(actions);
+        root.Controls.Add(folderPanel);
         root.Controls.Add(_progressBar);
         root.Controls.Add(_statusLabel);
-        root.Controls.Add(footer);
+        root.Controls.Add(footerShell);
 
         Controls.Add(root);
     }
@@ -1532,7 +1601,7 @@ internal sealed class DownloadForm : Form
     {
         Text = text,
         AutoSize = true,
-        ForeColor = Color.FromArgb(107, 114, 128),
+        ForeColor = DlpTheme.TextSecondary,
         Font = new Font(Font.FontFamily, 8.5F),
         Margin = new Padding(0)
     };
@@ -1543,9 +1612,9 @@ internal sealed class DownloadForm : Form
         {
             Text = text,
             AutoSize = true,
-            LinkColor = Color.FromArgb(22, 101, 216),
-            ActiveLinkColor = Color.FromArgb(22, 101, 216),
-            VisitedLinkColor = Color.FromArgb(22, 101, 216),
+            LinkColor = DlpTheme.Accent,
+            ActiveLinkColor = DlpTheme.AccentActive,
+            VisitedLinkColor = DlpTheme.Accent,
             Font = new Font(Font.FontFamily, 8.5F),
             Margin = new Padding(0)
         };
@@ -1561,25 +1630,29 @@ internal sealed class DownloadForm : Form
         button.Dock = DockStyle.Fill;
         button.Height = 42;
         button.FlatStyle = FlatStyle.Flat;
-        button.BackColor = Color.FromArgb(22, 101, 216);
+        button.BackColor = DlpTheme.AccentActive;
         button.ForeColor = Color.White;
-        button.FlatAppearance.BorderSize = 0;
-        button.Margin = text.EndsWith("video", StringComparison.OrdinalIgnoreCase)
-            ? new Padding(0, 0, 6, 0)
-            : new Padding(6, 0, 0, 0);
+        button.FlatAppearance.BorderColor = DlpTheme.AccentActive;
+        button.FlatAppearance.BorderSize = 1;
+        button.FlatAppearance.MouseOverBackColor = DlpTheme.Accent;
+        button.FlatAppearance.MouseDownBackColor = DlpTheme.AccentActive;
+        button.Margin = new Padding(0);
         button.Click += handler;
     }
 
     private static void ConfigureSecondaryButton(Button button, string text, EventHandler handler)
     {
         button.Text = text;
-        button.Width = 112;
-        button.Height = 38;
+        button.Dock = DockStyle.Fill;
+        button.Height = 40;
         button.FlatStyle = FlatStyle.Flat;
-        button.BackColor = Color.White;
-        button.ForeColor = Color.FromArgb(31, 42, 55);
-        button.FlatAppearance.BorderColor = Color.FromArgb(198, 207, 218);
-        button.Margin = new Padding(0, 0, 8, 0);
+        button.BackColor = DlpTheme.Surface;
+        button.ForeColor = DlpTheme.TextPrimary;
+        button.FlatAppearance.BorderColor = DlpTheme.Border;
+        button.FlatAppearance.BorderSize = 1;
+        button.FlatAppearance.MouseOverBackColor = DlpTheme.SurfaceHover;
+        button.FlatAppearance.MouseDownBackColor = DlpTheme.Surface;
+        button.Margin = new Padding(0);
         button.Click += handler;
     }
 
@@ -1589,7 +1662,6 @@ internal sealed class DownloadForm : Form
         {
             _videoButton.Enabled = false;
             _audioButton.Enabled = false;
-            _updateYtDlpButton.Enabled = false;
             SetStatus("yt-dlp.exe was not found", 0);
             return;
         }
@@ -1762,8 +1834,7 @@ internal sealed class DownloadForm : Form
     {
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
-        _updateAppButton.Enabled = false;
-        _updateYtDlpButton.Enabled = false;
+        _updateButton.Enabled = false;
         _progressBar.Visible = true;
         _progressBar.Value = 0;
         SetStatus(kind == DownloadKind.Video ? "Downloading best video" : "Downloading best audio", 0);
@@ -1774,8 +1845,7 @@ internal sealed class DownloadForm : Form
         _isPreparingDownload = true;
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
-        _updateAppButton.Enabled = false;
-        _updateYtDlpButton.Enabled = false;
+        _updateButton.Enabled = false;
         _progressBar.Visible = false;
         _progressBar.Value = 0;
         SetStatus("Preparing download", 0);
@@ -1791,8 +1861,22 @@ internal sealed class DownloadForm : Form
 
         _videoButton.Enabled = canRunYtDlp;
         _audioButton.Enabled = canRunYtDlp;
-        _updateAppButton.Enabled = canRunAppTools;
-        _updateYtDlpButton.Enabled = canRunYtDlp;
+        _updateButton.Enabled = canRunAppTools;
+    }
+
+    private async Task UpdateAllAsync()
+    {
+        if (_downloadProcess is not null || _isPreparingDownload || _isUpdatingApp || _isUpdatingYtDlp)
+        {
+            return;
+        }
+
+        await UpdateAppAsync();
+
+        if (!IsDisposed && !_isUpdatingApp)
+        {
+            await UpdateYtDlpAsync();
+        }
     }
 
     private async Task UpdateAppAsync()
@@ -1806,8 +1890,7 @@ internal sealed class DownloadForm : Form
         _isUpdatingApp = true;
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
-        _updateAppButton.Enabled = false;
-        _updateYtDlpButton.Enabled = false;
+        _updateButton.Enabled = false;
         _progressBar.Visible = false;
         _progressBar.Value = 0;
         SetStatus("Checking app update", 0);
@@ -1871,8 +1954,7 @@ internal sealed class DownloadForm : Form
         _isUpdatingYtDlp = true;
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
-        _updateAppButton.Enabled = false;
-        _updateYtDlpButton.Enabled = false;
+        _updateButton.Enabled = false;
         _progressBar.Visible = false;
         SetStatus("Updating yt-dlp", 0);
 

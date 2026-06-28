@@ -8,15 +8,15 @@
     :root {
       color-scheme: dark;
       font-family: "Segoe UI", Arial, sans-serif;
-      --bg: #121212;
-      --surface: #1a1a1a;
-      --text-primary: #e0e0e0;
-      --text-secondary: #b0b0b0;
-      --border: #333333;
-      --border-strong: #444444;
-      --accent: #9a9a9a;
-      --accent-active: #b0b0b0;
-      --accent-interactive: #7dafe0;
+      --bg: #0d1117;
+      --surface: #151b23;
+      --text-primary: #f2f7ff;
+      --text-secondary: #b7c5d8;
+      --border: #314155;
+      --border-strong: #496178;
+      --accent: #6f8aa8;
+      --accent-active: #2f81f7;
+      --accent-interactive: #58a6ff;
     }
 
     body {
@@ -75,6 +75,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 12px;
+      min-height: 34px;
     }
 
     .setting-title {
@@ -160,6 +161,7 @@
       position: absolute;
       inset: 0;
       opacity: 0;
+      cursor: pointer;
     }
 
     .track {
@@ -189,6 +191,11 @@
 
     .switch input:checked + .track::after {
       transform: translateX(20px);
+    }
+
+    .switch input:focus-visible + .track {
+      outline: 2px solid var(--accent-interactive);
+      outline-offset: 2px;
     }
 
     .status {
@@ -225,39 +232,39 @@
       <span id="version" class="version"></span>
     </div>
 
-    <p class="subtitle">Download &amp; browser control</p>
+    <p class="subtitle">Quick controls</p>
 
     <hr class="divider">
 
     <section class="settings">
       <div class="setting">
-        <p class="setting-title">Silent download</p>
-        <label class="switch" title="Toggle silent download">
-          <input id="silentDownload" type="checkbox">
+        <p id="silentDownloadLabel" class="setting-title">Silent download</p>
+        <label class="switch" title="Silent download">
+          <input id="silentDownload" type="checkbox" role="switch" aria-labelledby="silentDownloadLabel">
           <span class="track"></span>
         </label>
       </div>
 
       <div class="setting">
-        <p class="setting-title">Auto hide</p>
-        <label class="switch" title="Hide the DLP button after a short idle time">
-          <input id="autoHideOverlay" type="checkbox">
+        <p id="autoHideOverlayLabel" class="setting-title">Auto hide</p>
+        <label class="switch" title="Auto hide">
+          <input id="autoHideOverlay" type="checkbox" role="switch" aria-labelledby="autoHideOverlayLabel">
           <span class="track"></span>
         </label>
       </div>
 
       <div class="setting">
-        <p class="setting-title">Experimental</p>
-        <label class="switch" title="Show DLP on HTTPS pages with visible videos">
-          <input id="experimentalAllSites" type="checkbox">
+        <p id="experimentalAllSitesLabel" class="setting-title">All sites</p>
+        <label class="switch" title="All sites">
+          <input id="experimentalAllSites" type="checkbox" role="switch" aria-labelledby="experimentalAllSitesLabel">
           <span class="track"></span>
         </label>
       </div>
 
       <div class="setting">
-        <label class="setting-title" for="overlayPosition">Button place</label>
+        <label class="setting-title" for="overlayPosition">Button position</label>
         <div class="setting-select">
-          <select id="overlayPosition" title="Button place">
+          <select id="overlayPosition" title="Button position">
             <option value="auto">Auto</option>
             <option value="top-right">Top right</option>
             <option value="top-center">Top center</option>
@@ -275,10 +282,10 @@
     <section class="actions">
       <button id="openApp" type="button">Open DLP App</button>
       <button id="openFolder" type="button">Open folder</button>
-      <button id="openDashboard" class="wide" type="button">Dashboard</button>
+      <button id="openDashboard" class="wide" type="button">Downloads</button>
     </section>
 
-    <div id="status" class="status">Loading</div>
+    <div id="status" class="status" role="status" aria-live="polite">Loading</div>
 
     <hr class="divider">
 

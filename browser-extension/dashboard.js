@@ -4,6 +4,11 @@ const downloadPathElement = document.getElementById("downloadPath");
 const viewerFrameElement = document.getElementById("viewerFrame");
 const viewerMessageElement = document.getElementById("viewerMessage");
 const viewerPlayButton = document.getElementById("viewerPlay");
+const openedWithVideosHash = location.hash === "#videos";
+
+if (openedWithVideosHash && history.replaceState) {
+  history.replaceState(null, "", `${location.pathname}${location.search}`);
+}
 
 let selectedFile = null;
 let previewVideoElement = null;
@@ -12,6 +17,7 @@ let expectedVideoUrl = "";
 let previewSwitchTimer = 0;
 let previewReadyTimer = 0;
 let previewLoadToken = 0;
+let restoredInitialScroll = false;
 
 const PREVIEW_FADE_MS = 140;
 const PREVIEW_READY_TIMEOUT_MS = 1200;
@@ -49,6 +55,20 @@ function appendText(parent, text, className) {
   return element;
 }
 
+function restoreInitialScroll() {
+  if (restoredInitialScroll || !openedWithVideosHash) {
+    return;
+  }
+
+  restoredInitialScroll = true;
+  const resetScroll = () => window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+
+  window.requestAnimationFrame(() => {
+    resetScroll();
+    window.requestAnimationFrame(resetScroll);
+  });
+}
+
 function sendNativeCommand(action, details, callback) {
   chrome.runtime.sendMessage({ type: "dlp-native-command", action, ...(details || {}) }, (response) => {
     if (chrome.runtime.lastError) {
@@ -69,11 +89,11 @@ function openDownload(fileName, button) {
 
   sendNativeCommand("open_download", { fileName }, (response) => {
     button.disabled = false;
-    button.textContent = response.ok ? "Play" : "ERR";
+    button.textContent = response.ok ? "Open" : "Open failed";
 
     if (!response.ok) {
       window.setTimeout(() => {
-        button.textContent = "Play";
+        button.textContent = "Open";
       }, 1600);
     }
   });
@@ -146,7 +166,7 @@ function ensurePreviewElements() {
     });
     previewVideoElement.addEventListener("error", () => {
       if (!previewVideoElement.hidden && previewVideoElement.src === expectedVideoUrl) {
-        setPreviewMessage("Enable file access for DLP");
+        setPreviewMessage("Allow file access", "Enable file URLs for DLP in the extension details");
       }
     });
     viewerFrameElement.insertBefore(previewVideoElement, viewerPlayButton);
@@ -161,7 +181,7 @@ function ensurePreviewElements() {
   }
 }
 
-function setPreviewMessage(message) {
+function setPreviewMessage(message, detail) {
   previewLoadToken += 1;
   clearPreviewTimers();
   expectedVideoUrl = "";
@@ -171,7 +191,17 @@ function setPreviewMessage(message) {
   previewVideoElement.hidden = true;
   previewAudioElement.hidden = true;
   viewerMessageElement.hidden = false;
-  viewerMessageElement.textContent = message;
+  viewerMessageElement.replaceChildren();
+
+  const title = document.createElement("strong");
+  title.textContent = message;
+  viewerMessageElement.appendChild(title);
+
+  if (detail) {
+    const description = document.createElement("span");
+    description.textContent = detail;
+    viewerMessageElement.appendChild(description);
+  }
 }
 
 function applyVideoShape(video) {
@@ -226,7 +256,7 @@ function renderPreview(file) {
   ensurePreviewElements();
 
   if (!file.fileUrl) {
-    setPreviewMessage("Preview unavailable");
+    setPreviewMessage("Preview unavailable", file.fileName ? "Use Open to play it in Windows" : "Refresh downloads");
     return;
   }
 
@@ -325,15 +355,15 @@ function selectFile(file, item) {
   renderPreview(file);
   viewerFrameElement.setAttribute("aria-label", file.title || file.fileName || "Selected download");
   viewerPlayButton.disabled = !file.fileName;
-  viewerPlayButton.textContent = "Play";
+  viewerPlayButton.textContent = "Open";
 }
 
 function clearViewer(message) {
   selectedFile = null;
-  setPreviewMessage(message || "Select a video");
+  setPreviewMessage(message || "Select a file", "Choose a download from the list");
   viewerFrameElement.setAttribute("aria-label", "No download selected");
   viewerPlayButton.disabled = true;
-  viewerPlayButton.textContent = "Play";
+  viewerPlayButton.textContent = "Open";
 }
 
 function createVideoItem(file, selected) {
@@ -369,15 +399,22 @@ function createVideoItem(file, selected) {
 
 function renderError(message) {
   videosElement.replaceChildren();
-  clearViewer("No videos");
+  setPreviewMessage("Could not load downloads", "Check DLP and try Refresh");
+  viewerFrameElement.setAttribute("aria-label", "Downloads could not be loaded");
+  viewerPlayButton.disabled = true;
+  viewerPlayButton.textContent = "Open";
   appendText(videosElement, message || "Could not load downloads", "empty");
+  restoreInitialScroll();
 }
 
 function loadDownloads() {
   videosElement.replaceChildren();
   appendText(videosElement, "Loading", "empty");
   downloadPathElement.textContent = "";
-  clearViewer("Loading");
+  setPreviewMessage("Loading downloads", "Reading the DLP folder");
+  viewerFrameElement.setAttribute("aria-label", "Loading downloads");
+  viewerPlayButton.disabled = true;
+  viewerPlayButton.textContent = "Open";
 
   sendNativeCommand("list_downloads", {}, (response) => {
     if (!response.ok) {
@@ -390,8 +427,9 @@ function loadDownloads() {
     downloadPathElement.textContent = response.directory || "";
 
     if (files.length === 0) {
-      clearViewer("No videos");
-      appendText(videosElement, "No downloaded videos yet", "empty");
+      clearViewer("No downloads yet");
+      appendText(videosElement, "No downloads yet", "empty");
+      restoreInitialScroll();
       return;
     }
 
@@ -403,6 +441,7 @@ function loadDownloads() {
     }
 
     selectFile(firstFile, videosElement.querySelector(".item"));
+    restoreInitialScroll();
   });
 }
 

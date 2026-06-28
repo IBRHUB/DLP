@@ -807,6 +807,21 @@
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = `
+      #${BUTTON_ID},
+      #${TOAST_ID} {
+        --dlp-bg: #0d1117;
+        --dlp-surface: #151b23;
+        --dlp-text-primary: #f2f7ff;
+        --dlp-text-secondary: #b7c5d8;
+        --dlp-border: #314155;
+        --dlp-border-strong: #496178;
+        --dlp-accent-active: #2f81f7;
+        --dlp-accent-interactive: #58a6ff;
+        --dlp-success: #44d17d;
+        --dlp-error: #ff7b86;
+        --dlp-media: #000000;
+      }
+
       #${BUTTON_ID} {
         position: absolute;
         top: 12px;
@@ -815,25 +830,22 @@
         width: 58px;
         height: 24px;
         padding: 0;
-        border: 1px solid rgba(255, 255, 255, 0.34);
+        border: 1px solid color-mix(in srgb, var(--dlp-text-primary) 34%, transparent);
         border-radius: 6px;
-        background: rgba(10, 10, 10, 0.18);
-        backdrop-filter: blur(2px) saturate(1.45);
-        -webkit-backdrop-filter: blur(2px) saturate(1.45);
-        color: #fff;
+        background: color-mix(in srgb, var(--dlp-surface) 30%, transparent);
+        color: var(--dlp-text-primary);
         font: 700 11px/22px Arial, sans-serif;
         text-align: center;
         cursor: pointer;
-        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
-        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22);
+        text-shadow: 0 1px 2px color-mix(in srgb, var(--dlp-media) 75%, transparent);
         opacity: 0.72;
         transition: background 160ms ease, border-color 160ms ease, opacity 160ms ease, transform 160ms ease;
         user-select: none;
       }
 
       #${BUTTON_ID}:hover {
-        background: rgba(255, 255, 255, 0.16);
-        border-color: rgba(255, 255, 255, 0.58);
+        background: color-mix(in srgb, var(--dlp-text-primary) 16%, transparent);
+        border-color: color-mix(in srgb, var(--dlp-text-primary) 58%, transparent);
         opacity: 0.95;
         transform: translateY(-1px);
       }
@@ -845,18 +857,18 @@
       }
 
       #${BUTTON_ID}[data-dlp-status="sending"] {
-        background: rgba(22, 101, 216, 0.34);
-        border-color: rgba(147, 197, 253, 0.7);
+        background: color-mix(in srgb, var(--dlp-accent-interactive) 24%, transparent);
+        border-color: color-mix(in srgb, var(--dlp-accent-interactive) 70%, transparent);
       }
 
       #${BUTTON_ID}[data-dlp-status="success"] {
-        background: rgba(22, 163, 74, 0.36);
-        border-color: rgba(134, 239, 172, 0.72);
+        background: color-mix(in srgb, var(--dlp-success) 22%, var(--dlp-surface));
+        border-color: color-mix(in srgb, var(--dlp-success) 78%, transparent);
       }
 
       #${BUTTON_ID}[data-dlp-status="error"] {
-        background: rgba(220, 38, 38, 0.36);
-        border-color: rgba(252, 165, 165, 0.72);
+        background: color-mix(in srgb, var(--dlp-error) 18%, var(--dlp-surface));
+        border-color: color-mix(in srgb, var(--dlp-error) 78%, transparent);
       }
 
       #${BUTTON_ID}.dlp-overlay-hidden {
@@ -872,12 +884,11 @@
         z-index: 2147483647;
         max-width: min(320px, calc(100vw - 36px));
         padding: 9px 12px;
-        border: 1px solid rgba(255, 255, 255, 0.28);
-        border-radius: 7px;
-        background: rgba(17, 24, 39, 0.9);
-        color: #fff;
+        border: 1px solid color-mix(in srgb, var(--dlp-text-primary) 28%, transparent);
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--dlp-bg) 92%, transparent);
+        color: var(--dlp-text-primary);
         font: 600 12px/1.35 Arial, sans-serif;
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
         opacity: 0;
         transform: translateY(8px);
         pointer-events: none;
@@ -890,11 +901,11 @@
       }
 
       #${TOAST_ID}.dlp-toast-success {
-        border-color: rgba(134, 239, 172, 0.55);
+        border-color: color-mix(in srgb, var(--dlp-success) 62%, transparent);
       }
 
       #${TOAST_ID}.dlp-toast-error {
-        border-color: rgba(252, 165, 165, 0.55);
+        border-color: color-mix(in srgb, var(--dlp-error) 62%, transparent);
       }
     `;
 

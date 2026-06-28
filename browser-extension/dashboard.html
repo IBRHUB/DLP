@@ -14,19 +14,32 @@
       --space-4: 16px;
       --space-5: 24px;
       --space-6: 32px;
-      --bg: #121212;
-      --surface: #1a1a1a;
-      --text-primary: #e0e0e0;
-      --text-secondary: #b0b0b0;
-      --border: #333333;
-      --border-strong: #444444;
-      --accent: #9a9a9a;
-      --accent-active: #b0b0b0;
-      --accent-interactive: #7dafe0;
-      --surface-muted: #1a1a1a;
+      --bg: #0d1117;
+      --surface: #151b23;
+      --text-primary: #f2f7ff;
+      --text-secondary: #b7c5d8;
+      --border: #314155;
+      --border-strong: #496178;
+      --accent: #6f8aa8;
+      --accent-active: #2f81f7;
+      --accent-interactive: #58a6ff;
+      --surface-muted: #151b23;
       --ink: var(--text-primary);
       --muted: var(--text-secondary);
+      --topbar-height: 86px;
       --preview-max-height: calc(100vh - 96px);
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      overflow: hidden;
     }
 
     body {
@@ -37,32 +50,33 @@
 
     main {
       display: grid;
-      grid-template-rows: auto auto minmax(0, 1fr);
-      width: min(100% - 48px, 1560px);
-      min-height: 100vh;
+      grid-template-rows: auto minmax(0, 1fr);
+      width: min(100% - clamp(28px, 4vw, 48px), 1560px);
+      height: 100vh;
       max-width: 1560px;
       margin: 0 auto;
-      padding: var(--space-5) 0;
+      padding: clamp(var(--space-4), 2vw, var(--space-5)) 0;
+      overflow: hidden;
+    }
+
+    .topbar {
+      display: grid;
+      gap: var(--space-2);
+      padding-bottom: var(--space-4);
+      background: var(--bg);
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
     }
 
     header {
-      position: sticky;
-      top: 0;
-      z-index: 4;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: var(--space-4);
-      margin-bottom: var(--space-3);
-      background: var(--bg);
     }
 
     .path {
-      position: sticky;
-      top: 46px;
-      z-index: 4;
-      margin: 0 0 var(--space-4);
-      background: var(--bg);
+      min-height: 16px;
+      margin: 0;
       color: var(--text-secondary);
       font-size: 12px;
       overflow-wrap: anywhere;
@@ -107,12 +121,47 @@
 
     .list {
       display: grid;
-      max-height: calc(100vh - 124px);
+      height: 100%;
       gap: var(--space-2);
       align-content: start;
       min-width: 0;
       overflow: auto;
       padding-right: var(--space-1);
+      scrollbar-color: transparent transparent;
+      scrollbar-gutter: stable;
+      scrollbar-width: thin;
+      transition: scrollbar-color 160ms ease;
+    }
+
+    .list:hover,
+    .list:focus-within {
+      scrollbar-color: color-mix(in srgb, var(--border-strong) 85%, transparent) transparent;
+    }
+
+    .list::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    .list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .list::-webkit-scrollbar-thumb {
+      min-height: 48px;
+      border: 3px solid transparent;
+      border-radius: 999px;
+      background: transparent;
+      background-clip: content-box;
+      transition: background-color 160ms ease;
+    }
+
+    .list:hover::-webkit-scrollbar-thumb,
+    .list:focus-within::-webkit-scrollbar-thumb {
+      background-color: color-mix(in srgb, var(--border-strong) 85%, transparent);
+    }
+
+    .list::-webkit-scrollbar-thumb:hover {
+      background-color: var(--accent);
     }
 
     .item {
@@ -132,6 +181,7 @@
 
     .item.active {
       border-color: var(--accent-interactive);
+      background: color-mix(in srgb, var(--accent-interactive) 10%, var(--surface));
     }
 
     .row {
@@ -169,19 +219,22 @@
 
     .layout {
       display: grid;
-      grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+      grid-template-columns: minmax(248px, clamp(300px, 24vw, 340px)) minmax(0, 1fr);
       gap: var(--space-4);
       align-items: start;
       min-height: 0;
+      padding-top: var(--space-4);
+      overflow: hidden;
     }
 
     .viewer {
-      position: sticky;
-      top: var(--space-5);
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: center;
-      min-height: calc(100vh - 112px);
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      overflow: hidden;
     }
 
     .viewer-frame {
@@ -190,6 +243,7 @@
       align-items: center;
       justify-content: center;
       width: 100%;
+      min-width: 0;
       max-height: var(--preview-max-height);
       aspect-ratio: 16 / 9;
       border: 1px solid var(--border);
@@ -226,11 +280,26 @@
     .viewer-message {
       padding: var(--space-4);
       text-align: center;
+      color: var(--text-primary);
+      line-height: 1.45;
+      max-width: 42ch;
+    }
+
+    .viewer-message strong {
+      display: block;
+      margin-bottom: var(--space-1);
+      font-size: 15px;
+    }
+
+    .viewer-message span {
+      color: var(--text-secondary);
+      font-size: 12px;
     }
 
     .viewer-frame.empty,
     .viewer-frame.audio {
-      min-height: min(560px, var(--preview-max-height));
+      width: min(100%, 680px);
+      min-height: min(320px, var(--preview-max-height));
       aspect-ratio: auto;
       background: var(--surface);
     }
@@ -264,6 +333,18 @@
       aspect-ratio: 1 / 1;
       margin-left: auto;
       margin-right: auto;
+    }
+
+    @media (max-width: 1180px) {
+      .layout {
+        grid-template-columns: minmax(236px, 300px) minmax(0, 1fr);
+        gap: var(--space-3);
+      }
+
+      .viewer-frame.empty,
+      .viewer-frame.audio {
+        width: min(100%, 600px);
+      }
     }
 
     .viewer-frame video {
@@ -307,33 +388,71 @@
 
     @media (max-width: 920px) {
       main {
-        width: min(100% - 28px, 1560px);
         padding: var(--space-4) 0;
       }
 
+      .topbar {
+        padding-bottom: var(--space-3);
+      }
+
       .layout {
+        grid-template-areas:
+          "viewer"
+          "list";
         grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(0, 1fr);
       }
 
       .list {
-        max-height: none;
-        overflow: visible;
+        grid-area: list;
+        min-height: 0;
+        overflow: auto;
         padding-right: 0;
       }
 
       .viewer {
-        position: static;
-        min-height: auto;
+        grid-area: viewer;
         display: block;
+        height: auto;
+        overflow: visible;
       }
 
       .viewer-frame {
         --preview-max-height: 70vh;
       }
 
+      .viewer-frame.empty,
+      .viewer-frame.audio {
+        width: 100%;
+      }
+
       .viewer-play {
         top: var(--space-2);
         right: var(--space-2);
+      }
+    }
+
+    @media (max-width: 560px) {
+      main {
+        width: min(100% - 24px, 1560px);
+        padding: var(--space-3) 0;
+      }
+
+      header {
+        gap: var(--space-2);
+      }
+
+      h1 {
+        font-size: 20px;
+      }
+
+      button {
+        min-width: 44px;
+      }
+
+      .viewer-frame.empty,
+      .viewer-frame.audio {
+        min-height: min(280px, var(--preview-max-height));
       }
     }
 
@@ -347,19 +466,24 @@
 </head>
 <body>
   <main>
-    <header>
-      <h1>DLP Downloads</h1>
-      <button id="refreshVideos" type="button">Refresh</button>
-    </header>
+    <div class="topbar">
+      <header>
+        <h1>DLP Downloads</h1>
+        <button id="refreshVideos" type="button">Refresh</button>
+      </header>
+      <div id="downloadPath" class="path"></div>
+    </div>
 
-    <div id="downloadPath" class="path"></div>
     <div class="layout">
       <section id="videos" class="list" aria-label="Downloaded files"></section>
 
       <section class="viewer" aria-label="Selected download">
         <div id="viewerFrame" class="viewer-frame empty">
-          <div id="viewerMessage" class="viewer-message">Select a video</div>
-          <button id="viewerPlay" class="viewer-play" type="button" disabled>Play</button>
+          <div id="viewerMessage" class="viewer-message">
+            <strong>Select a file</strong>
+            <span>Choose a download from the list</span>
+          </div>
+          <button id="viewerPlay" class="viewer-play" type="button" disabled>Open</button>
         </div>
       </section>
     </div>
