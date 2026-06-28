@@ -6,33 +6,64 @@
   <title>DLP Downloads</title>
   <style>
     :root {
-      color-scheme: light;
+      color-scheme: dark;
       font-family: "Segoe UI", Arial, sans-serif;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 24px;
+      --space-6: 32px;
+      --bg: #121212;
+      --surface: #1a1a1a;
+      --text-primary: #e0e0e0;
+      --text-secondary: #b0b0b0;
+      --border: #333333;
+      --border-strong: #444444;
+      --accent: #9a9a9a;
+      --accent-active: #b0b0b0;
+      --accent-interactive: #7dafe0;
+      --surface-muted: #1a1a1a;
+      --ink: var(--text-primary);
+      --muted: var(--text-secondary);
+      --preview-max-height: calc(100vh - 96px);
     }
 
     body {
       margin: 0;
-      background: #fafbfc;
-      color: #1f2937;
+      background: var(--bg);
+      color: var(--text-primary);
     }
 
     main {
-      max-width: 980px;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      width: min(100% - 48px, 1560px);
+      min-height: 100vh;
+      max-width: 1560px;
       margin: 0 auto;
-      padding: 28px 22px;
+      padding: var(--space-5) 0;
     }
 
     header {
+      position: sticky;
+      top: 0;
+      z-index: 4;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 18px;
+      gap: var(--space-4);
+      margin-bottom: var(--space-3);
+      background: var(--bg);
     }
 
     .path {
-      margin: -8px 0 18px;
-      color: #6b7280;
+      position: sticky;
+      top: 46px;
+      z-index: 4;
+      margin: 0 0 var(--space-4);
+      background: var(--bg);
+      color: var(--text-secondary);
       font-size: 12px;
       overflow-wrap: anywhere;
     }
@@ -45,46 +76,69 @@
 
     button {
       height: 34px;
-      border: 1px solid #c6cfda;
+      border: 1px solid var(--border);
       border-radius: 6px;
-      background: #ffffff;
-      color: #1f2937;
+      background: var(--surface);
+      color: var(--text-primary);
       font: 650 13px "Segoe UI", Arial, sans-serif;
       padding: 0 13px;
       cursor: pointer;
+      transition: border-color 150ms ease, color 150ms ease;
     }
 
     button:hover {
-      border-color: #1665d8;
-      color: #1665d8;
+      border-color: var(--accent-interactive);
+      color: var(--accent-interactive);
+    }
+
+    button:disabled {
+      cursor: default;
+      color: var(--text-secondary);
+      border-color: var(--border);
+      background: var(--surface);
+      opacity: 0.6;
+    }
+
+    button:focus-visible,
+    .item:focus-visible {
+      outline: 2px solid var(--accent-interactive);
+      outline-offset: 2px;
     }
 
     .list {
       display: grid;
-      gap: 10px;
+      max-height: calc(100vh - 124px);
+      gap: var(--space-2);
       align-content: start;
       min-width: 0;
+      overflow: auto;
+      padding-right: var(--space-1);
     }
 
     .item {
-      border: 1px solid #d4dce7;
+      border: 1px solid var(--border);
       border-radius: 8px;
-      background: #ffffff;
-      padding: 14px;
+      background: var(--surface);
+      padding: var(--space-3);
       cursor: pointer;
       text-align: left;
+      color: var(--text-primary);
+      transition: border-color 150ms ease;
     }
 
-    .item:hover,
+    .item:hover {
+      border-color: var(--accent);
+    }
+
     .item.active {
-      border-color: #1665d8;
+      border-color: var(--accent-interactive);
     }
 
     .row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 14px;
+      gap: var(--space-3);
     }
 
     .title {
@@ -96,76 +150,130 @@
 
     .meta {
       margin-top: 7px;
-      color: #6b7280;
+      color: var(--text-secondary);
       font-size: 12px;
       overflow-wrap: anywhere;
     }
 
     .empty {
-      border: 1px dashed #c6cfda;
+      border: 1px dashed var(--border-strong);
       border-radius: 8px;
-      padding: 24px;
-      color: #6b7280;
-      background: #ffffff;
+      padding: var(--space-5);
+      color: var(--text-secondary);
+      background: var(--surface);
     }
 
     .ok {
-      color: #166534;
-    }
-
-    .error {
-      color: #991b1b;
+      color: var(--accent-interactive);
     }
 
     .layout {
       display: grid;
-      grid-template-columns: minmax(320px, 42%) minmax(360px, 1fr);
-      gap: 16px;
+      grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+      gap: var(--space-4);
       align-items: start;
+      min-height: 0;
     }
 
     .viewer {
       position: sticky;
-      top: 18px;
-      min-height: 360px;
-      border: 1px solid #d4dce7;
-      border-radius: 8px;
-      background: #ffffff;
-      padding: 18px;
-    }
-
-    .viewer-frame {
+      top: var(--space-5);
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: 220px;
-      max-height: 560px;
-      margin-bottom: 16px;
-      border: 1px solid #d4dce7;
+      min-height: calc(100vh - 112px);
+    }
+
+    .viewer-frame {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      max-height: var(--preview-max-height);
+      aspect-ratio: 16 / 9;
+      border: 1px solid var(--border);
       border-radius: 8px;
-      background: #f3f5f8;
-      color: #6b7280;
+      background: #000000;
+      color: var(--text-secondary);
       font-size: 13px;
       overflow: hidden;
     }
 
+    .viewer-frame::after {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      content: "";
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 140ms ease;
+      z-index: 2;
+    }
+
+    .viewer-frame.loading {
+      border-color: var(--border);
+      background: var(--surface);
+    }
+
+    .viewer-frame.loading::after {
+      opacity: 1;
+    }
+
+    .viewer-message {
+      padding: var(--space-4);
+      text-align: center;
+    }
+
+    .viewer-frame.empty,
+    .viewer-frame.audio {
+      min-height: min(560px, var(--preview-max-height));
+      aspect-ratio: auto;
+      background: var(--surface);
+    }
+
+    .viewer-frame.landscape,
+    .viewer-frame.ultrawide {
+      width: 100%;
+      aspect-ratio: var(--media-ratio, 16 / 9);
+    }
+
+    .viewer-frame.portrait {
+      width: auto;
+      height: min(var(--preview-max-height), 820px);
+      max-width: min(100%, 760px);
+      aspect-ratio: var(--media-ratio, 9 / 16);
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .viewer-frame.tall {
+      width: auto;
+      height: min(var(--preview-max-height), 820px);
+      max-width: min(100%, 500px);
+      aspect-ratio: var(--media-ratio, 9 / 16);
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .viewer-frame.square {
+      width: min(100%, var(--preview-max-height), 760px);
+      aspect-ratio: 1 / 1;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
     .viewer-frame video {
       width: 100%;
-      max-height: 540px;
-      border-radius: 7px;
+      height: 100%;
+      display: block;
       background: #000000;
       object-fit: contain;
-    }
-
-    .viewer-frame video.portrait {
-      width: auto;
-      max-width: 72%;
-      height: min(540px, 70vh);
-    }
-
-    .viewer-frame video.landscape {
-      width: 100%;
-      height: auto;
+      opacity: 1;
+      transition: opacity 140ms ease;
     }
 
     .viewer-frame audio {
@@ -173,25 +281,66 @@
       max-width: 420px;
     }
 
-    .viewer-title {
-      margin: 0 0 8px;
-      font-size: 18px;
-      overflow-wrap: anywhere;
+    .viewer-frame video[hidden],
+    .viewer-frame audio[hidden],
+    .viewer-message[hidden] {
+      display: none;
     }
 
-    .viewer-actions {
-      display: flex;
-      justify-content: flex-start;
-      margin-top: 16px;
+    .viewer-play {
+      position: absolute;
+      top: var(--space-3);
+      right: var(--space-3);
+      z-index: 3;
+      background: var(--surface);
+      border-color: var(--border);
+      color: var(--text-primary);
     }
 
-    @media (max-width: 820px) {
+    .viewer-play:disabled {
+      visibility: hidden;
+    }
+
+    .viewer-frame.loading .viewer-play {
+      visibility: hidden;
+    }
+
+    @media (max-width: 920px) {
+      main {
+        width: min(100% - 28px, 1560px);
+        padding: var(--space-4) 0;
+      }
+
       .layout {
         grid-template-columns: 1fr;
       }
 
+      .list {
+        max-height: none;
+        overflow: visible;
+        padding-right: 0;
+      }
+
       .viewer {
         position: static;
+        min-height: auto;
+        display: block;
+      }
+
+      .viewer-frame {
+        --preview-max-height: 70vh;
+      }
+
+      .viewer-play {
+        top: var(--space-2);
+        right: var(--space-2);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .viewer-frame::after,
+      .viewer-frame video {
+        transition: none;
       }
     }
   </style>
@@ -205,15 +354,12 @@
 
     <div id="downloadPath" class="path"></div>
     <div class="layout">
-      <section id="videos" class="list"></section>
+      <section id="videos" class="list" aria-label="Downloaded files"></section>
 
-      <section class="viewer" aria-live="polite">
-        <div id="viewerFrame" class="viewer-frame">Select a video</div>
-        <h2 id="viewerTitle" class="viewer-title">No video selected</h2>
-        <div id="viewerMeta" class="meta"></div>
-        <div id="viewerFile" class="meta"></div>
-        <div class="viewer-actions">
-          <button id="viewerPlay" type="button" disabled>Play</button>
+      <section class="viewer" aria-label="Selected download">
+        <div id="viewerFrame" class="viewer-frame empty">
+          <div id="viewerMessage" class="viewer-message">Select a video</div>
+          <button id="viewerPlay" class="viewer-play" type="button" disabled>Play</button>
         </div>
       </section>
     </div>

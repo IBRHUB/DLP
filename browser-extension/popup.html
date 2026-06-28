@@ -6,26 +6,36 @@
   <title>DLP</title>
   <style>
     :root {
-      color-scheme: light;
+      color-scheme: dark;
       font-family: "Segoe UI", Arial, sans-serif;
+      --bg: #121212;
+      --surface: #1a1a1a;
+      --text-primary: #e0e0e0;
+      --text-secondary: #b0b0b0;
+      --border: #333333;
+      --border-strong: #444444;
+      --accent: #9a9a9a;
+      --accent-active: #b0b0b0;
+      --accent-interactive: #7dafe0;
     }
 
     body {
       width: 280px;
       margin: 0;
-      background: #fafbfc;
-      color: #1f2937;
+      background: var(--bg);
+      color: var(--text-primary);
     }
 
     .shell {
-      padding: 14px;
+      padding: 14px 16px;
     }
 
     .header {
       display: flex;
-      align-items: center;
+      align-items: baseline;
       justify-content: space-between;
-      margin-bottom: 12px;
+      gap: 8px;
+      margin-bottom: 4px;
     }
 
     .title {
@@ -36,8 +46,28 @@
     }
 
     .version {
-      color: #6b7280;
+      color: var(--text-secondary);
       font-size: 12px;
+      font-weight: 400;
+    }
+
+    .subtitle {
+      margin: 0 0 12px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .divider {
+      height: 1px;
+      margin: 12px 0;
+      background: var(--border-strong);
+      border: 0;
+    }
+
+    .settings {
+      display: grid;
+      gap: 10px;
     }
 
     .setting {
@@ -45,65 +75,74 @@
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 12px 13px;
-      border: 1px solid #c6cfda;
-      border-radius: 8px;
-      background: #ffffff;
-      margin-bottom: 8px;
     }
 
     .setting-title {
       margin: 0;
       font-size: 13px;
-      font-weight: 650;
+      font-weight: 500;
     }
 
-    .field {
-      display: grid;
-      gap: 7px;
-      padding: 12px 13px;
-      border: 1px solid #c6cfda;
-      border-radius: 8px;
-      background: #ffffff;
-      margin-bottom: 8px;
+    .setting-select {
+      position: relative;
+      flex: 0 0 132px;
+      max-width: 132px;
     }
 
-    .field label {
-      font-size: 13px;
-      font-weight: 650;
+    .setting-select::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: 10px;
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid var(--text-secondary);
+      transform: translateY(-35%);
+      pointer-events: none;
     }
 
-    select {
+    .setting-select select {
       width: 100%;
       height: 32px;
-      border: 1px solid #c6cfda;
+      border: 1px solid var(--border);
       border-radius: 6px;
-      background: #ffffff;
-      color: #1f2937;
-      font: 13px "Segoe UI", Arial, sans-serif;
-      padding: 0 8px;
+      background: var(--surface);
+      color: var(--text-primary);
+      font: 500 12px "Segoe UI", Arial, sans-serif;
+      padding: 0 28px 0 10px;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+
+    .setting-select select:hover,
+    .setting-select select:focus {
+      border-color: var(--accent-interactive);
+      outline: none;
     }
 
     .actions {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
-      margin-bottom: 8px;
     }
 
     .actions button {
       height: 34px;
-      border: 1px solid #c6cfda;
+      border: 1px solid var(--border);
       border-radius: 6px;
-      background: #ffffff;
-      color: #1f2937;
-      font: 650 12px "Segoe UI", Arial, sans-serif;
+      background: var(--surface);
+      color: var(--text-primary);
+      font: 600 12px "Segoe UI", Arial, sans-serif;
       cursor: pointer;
+      transition: border-color 150ms ease, color 150ms ease;
     }
 
     .actions button:hover {
-      border-color: #1665d8;
-      color: #1665d8;
+      border-color: var(--accent-interactive);
+      color: var(--accent-interactive);
     }
 
     .actions .wide {
@@ -127,7 +166,7 @@
       position: absolute;
       inset: 0;
       border-radius: 999px;
-      background: #d1d5db;
+      background: var(--border-strong);
       cursor: pointer;
       transition: background 150ms ease;
     }
@@ -140,12 +179,12 @@
       width: 18px;
       height: 18px;
       border-radius: 50%;
-      background: #f9fafb;
+      background: var(--text-primary);
       transition: transform 150ms ease;
     }
 
     .switch input:checked + .track {
-      background: #1665d8;
+      background: var(--accent-active);
     }
 
     .switch input:checked + .track::after {
@@ -153,25 +192,28 @@
     }
 
     .status {
-      min-height: 18px;
+      min-height: 16px;
       margin-top: 10px;
-      color: #4b5563;
-      font-size: 12px;
+      color: var(--text-secondary);
+      font-size: 11px;
+      line-height: 1.35;
     }
 
     .footer {
-      margin-top: 8px;
-      color: #6b7280;
+      display: grid;
+      gap: 2px;
+      color: var(--text-secondary);
       font-size: 11px;
-      text-align: right;
+      line-height: 1.45;
     }
 
     .footer a {
-      color: #1665d8;
+      color: var(--accent-interactive);
       text-decoration: none;
     }
 
     .footer a:hover {
+      color: var(--text-primary);
       text-decoration: underline;
     }
   </style>
@@ -183,63 +225,66 @@
       <span id="version" class="version"></span>
     </div>
 
+    <p class="subtitle">Download &amp; browser control</p>
+
+    <hr class="divider">
+
+    <section class="settings">
+      <div class="setting">
+        <p class="setting-title">Silent download</p>
+        <label class="switch" title="Toggle silent download">
+          <input id="silentDownload" type="checkbox">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div class="setting">
+        <p class="setting-title">Auto hide</p>
+        <label class="switch" title="Hide the DLP button after a short idle time">
+          <input id="autoHideOverlay" type="checkbox">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div class="setting">
+        <p class="setting-title">Experimental</p>
+        <label class="switch" title="Show DLP on HTTPS pages with visible videos">
+          <input id="experimentalAllSites" type="checkbox">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div class="setting">
+        <label class="setting-title" for="overlayPosition">Button place</label>
+        <div class="setting-select">
+          <select id="overlayPosition" title="Button place">
+            <option value="auto">Auto</option>
+            <option value="top-right">Top right</option>
+            <option value="top-center">Top center</option>
+            <option value="top-left">Top left</option>
+            <option value="bottom-right">Bottom right</option>
+            <option value="bottom-center">Bottom center</option>
+            <option value="bottom-left">Bottom left</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
     <section class="actions">
       <button id="openApp" type="button">Open DLP App</button>
       <button id="openFolder" type="button">Open folder</button>
-      <button id="openDashboard" class="wide" type="button">Videos</button>
-    </section>
-
-    <section class="setting">
-      <div>
-        <p class="setting-title">Silent download</p>
-      </div>
-
-      <label class="switch" title="Toggle silent download">
-        <input id="silentDownload" type="checkbox">
-        <span class="track"></span>
-      </label>
-    </section>
-
-    <section class="setting">
-      <div>
-        <p class="setting-title">Auto hide</p>
-      </div>
-
-      <label class="switch" title="Hide the DLP button after a short idle time">
-        <input id="autoHideOverlay" type="checkbox">
-        <span class="track"></span>
-      </label>
-    </section>
-
-    <section class="setting">
-      <div>
-        <p class="setting-title">Experimental</p>
-      </div>
-
-      <label class="switch" title="Show DLP on HTTPS pages with visible videos">
-        <input id="experimentalAllSites" type="checkbox">
-        <span class="track"></span>
-      </label>
-    </section>
-
-    <section class="field">
-      <label for="overlayPosition">Button place</label>
-      <select id="overlayPosition">
-        <option value="auto">Auto</option>
-        <option value="top-right">Top right</option>
-        <option value="top-center">Top center</option>
-        <option value="top-left">Top left</option>
-        <option value="bottom-right">Bottom right</option>
-        <option value="bottom-center">Bottom center</option>
-        <option value="bottom-left">Bottom left</option>
-      </select>
+      <button id="openDashboard" class="wide" type="button">Dashboard</button>
     </section>
 
     <div id="status" class="status">Loading</div>
+
+    <hr class="divider">
+
     <div class="footer">
-      Developed by <a id="ibrahimLink" href="https://ibrhub.net">IBRAHIM</a>
-      <br>
-      Source <a id="sourceLink" href="https://github.com/IBRHUB/DLP">IBRHUB/DLP</a>
+      <div>Developed by <a id="ibrahimLink" href="https://ibrhub.net">IBRAHIM</a></div>
+      <div>Source <a id="sourceLink" href="https://github.com/IBRHUB/DLP">IBRHUB/DLP</a></div>
     </div>
   </main>
 

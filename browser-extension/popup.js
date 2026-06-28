@@ -23,7 +23,7 @@ function setStatus(text) {
   statusElement.textContent = text;
 }
 
-function render(settings, statusText = "Ready") {
+function render(settings, statusText = "") {
   silentDownloadInput.checked = Boolean(settings.silentDownload);
   autoHideOverlayInput.checked = Boolean(settings.autoHideOverlay);
   experimentalAllSitesInput.checked = Boolean(settings.experimentalAllSites);
