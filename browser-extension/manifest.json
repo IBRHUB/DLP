@@ -34,6 +34,7 @@
     "*://www.soundcloud.com/*",
     "*://m.soundcloud.com/*",
     "*://on.soundcloud.com/*",
+    "file:///*",
     "https://*/*"
   ],
   "background": {

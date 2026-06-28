@@ -84,6 +84,32 @@
       padding: 0 8px;
     }
 
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .actions button {
+      height: 34px;
+      border: 1px solid #c6cfda;
+      border-radius: 6px;
+      background: #ffffff;
+      color: #1f2937;
+      font: 650 12px "Segoe UI", Arial, sans-serif;
+      cursor: pointer;
+    }
+
+    .actions button:hover {
+      border-color: #1665d8;
+      color: #1665d8;
+    }
+
+    .actions .wide {
+      grid-column: span 2;
+    }
+
     .switch {
       position: relative;
       flex: 0 0 auto;
@@ -156,6 +182,12 @@
       <h1 class="title">DLP</h1>
       <span id="version" class="version"></span>
     </div>
+
+    <section class="actions">
+      <button id="openApp" type="button">Open DLP App</button>
+      <button id="openFolder" type="button">Open folder</button>
+      <button id="openDashboard" class="wide" type="button">Videos</button>
+    </section>
 
     <section class="setting">
       <div>

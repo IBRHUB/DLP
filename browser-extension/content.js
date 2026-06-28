@@ -550,6 +550,39 @@
     return location.href;
   }
 
+  function getMetaContent(selector) {
+    return document.querySelector(selector)?.getAttribute("content")?.trim() || "";
+  }
+
+  function getMediaTitle() {
+    const platform = getPlatform();
+    let title = "";
+
+    if (platform === "youtube") {
+      title = document.querySelector("h1 yt-formatted-string")?.textContent?.trim()
+        || document.querySelector("h1")?.textContent?.trim()
+        || "";
+    } else if (platform === "soundcloud") {
+      title = document.querySelector(".soundTitle__title span")?.textContent?.trim()
+        || document.querySelector("h1")?.textContent?.trim()
+        || "";
+    } else if (platform === "x") {
+      title = getVisibleVideo()
+        ?.closest("article")
+        ?.querySelector('[data-testid="tweetText"]')
+        ?.textContent
+        ?.trim() || "";
+    }
+
+    title = title
+      || getMetaContent('meta[property="og:title"]')
+      || getMetaContent('meta[name="twitter:title"]')
+      || document.title
+      || "";
+
+    return title.replace(/\s+/g, " ").trim();
+  }
+
   function getExperimentalVideoUrl() {
     const video = getVisibleVideo();
 
@@ -987,7 +1020,8 @@
       chrome.runtime.sendMessage(
         {
           type: "dlp-download-current-video",
-          url: getDownloadUrl()
+          url: getDownloadUrl(),
+          title: getMediaTitle()
         },
         (response) => {
           if (!hasRuntime()) {

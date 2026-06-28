@@ -9,12 +9,48 @@ using System.Text.RegularExpressions;
 
 internal static class Program
 {
+    private static readonly string[] DownloadMediaExtensions =
+    [
+        ".mp4",
+        ".mkv",
+        ".webm",
+        ".mov",
+        ".mp3",
+        ".m4a",
+        ".opus",
+        ".wav",
+        ".flac",
+        ".aac"
+    ];
+
     [STAThread]
     private static int Main(string[] args)
     {
         string? source = ReadOption(args, "--source");
         string? url = ReadOption(args, "--url");
+        string? title = ReadOption(args, "--title");
+        string? openDownload = ReadOption(args, "--open-download");
         bool silent = HasSwitch(args, "--silent");
+        bool openApp = HasSwitch(args, "--open-app");
+        bool openDownloads = HasSwitch(args, "--open-downloads");
+
+        if (!string.IsNullOrWhiteSpace(openDownload))
+        {
+            OpenDownloadedFile(openDownload);
+            return 0;
+        }
+
+        if (openApp)
+        {
+            ShowReadyMessage();
+            return 0;
+        }
+
+        if (openDownloads)
+        {
+            OpenDownloadFolder();
+            return 0;
+        }
 
         if (string.IsNullOrWhiteSpace(url) && NativeMessagingHost.IsNativeMessagingInvocation())
         {
@@ -23,12 +59,7 @@ internal static class Program
 
         if (string.IsNullOrWhiteSpace(url))
         {
-            ApplicationConfiguration.Initialize();
-            MessageBox.Show(
-                "DLP is ready. Use Download with DLP from a supported browser page.",
-                "DLP",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            ShowReadyMessage();
             return 0;
         }
 
@@ -36,11 +67,11 @@ internal static class Program
 
         if (silent)
         {
-            return SilentDownloader.DownloadVideoAsync(url, source ?? "unknown").GetAwaiter().GetResult();
+            return SilentDownloader.DownloadVideoAsync(url, source ?? "unknown", title).GetAwaiter().GetResult();
         }
 
         ApplicationConfiguration.Initialize();
-        Application.Run(new DownloadForm(url, source ?? "unknown"));
+        Application.Run(new DownloadForm(url, source ?? "unknown", title));
 
         return 0;
     }
@@ -61,6 +92,75 @@ internal static class Program
     private static bool HasSwitch(string[] args, string name)
     {
         return args.Any(arg => string.Equals(arg, name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static string GetDownloadDirectory() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        "Downloads",
+        "DLP");
+
+    public static void OpenDownloadFolder()
+    {
+        string downloadDirectory = GetDownloadDirectory();
+        Directory.CreateDirectory(downloadDirectory);
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = downloadDirectory,
+            UseShellExecute = true
+        });
+
+        Log($"Opened download folder: {downloadDirectory}");
+    }
+
+    public static void OpenDownloadedFile(string fileName)
+    {
+        try
+        {
+            string downloadDirectory = Path.GetFullPath(GetDownloadDirectory());
+            string filePath = Path.GetFullPath(Path.Combine(downloadDirectory, fileName));
+            string directoryPrefix = downloadDirectory.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+            if (string.IsNullOrWhiteSpace(fileName)
+                || fileName != Path.GetFileName(fileName)
+                || !filePath.StartsWith(directoryPrefix, StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(filePath)
+                || !IsDownloadedMediaFile(filePath))
+            {
+                Log($"Rejected downloaded file open request: {fileName}");
+                return;
+            }
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = filePath,
+                UseShellExecute = true
+            });
+
+            Log($"Opened downloaded file: {filePath}");
+        }
+        catch (Exception ex)
+        {
+            Log($"Open downloaded file failed: {ex}");
+        }
+    }
+
+    private static bool IsDownloadedMediaFile(string filePath)
+    {
+        string extension = Path.GetExtension(filePath);
+
+        return DownloadMediaExtensions.Any(mediaExtension =>
+            string.Equals(extension, mediaExtension, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static void ShowReadyMessage()
+    {
+        ApplicationConfiguration.Initialize();
+        MessageBox.Show(
+            "DLP is ready. Use Download with DLP from a supported browser page.",
+            "DLP",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
     }
 
     public static void Log(string message)
@@ -90,6 +190,30 @@ internal static class NativeMessagingHost
 {
     private const int MaxMessageBytes = 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly string[] MediaExtensions =
+    [
+        ".mp4",
+        ".mkv",
+        ".webm",
+        ".mov",
+        ".mp3",
+        ".m4a",
+        ".opus",
+        ".wav",
+        ".flac",
+        ".aac"
+    ];
+
+    private static readonly string[] AudioExtensions =
+    [
+        ".mp3",
+        ".m4a",
+        ".opus",
+        ".wav",
+        ".flac",
+        ".aac"
+    ];
+
     private static readonly string[] AllowedHosts =
     [
         "youtube.com",
@@ -200,6 +324,10 @@ internal static class NativeMessagingHost
                 action = "ping",
                 message = "DLP is alive"
             },
+            "open_app" => HandleOpenApp(),
+            "open_folder" => HandleOpenFolder(),
+            "list_downloads" => HandleListDownloads(),
+            "open_download" => HandleOpenDownload(root),
             "download" => HandleDownload(root),
             _ => throw new NativeHostException("unsupported_action", "Unsupported native host action")
         };
@@ -208,6 +336,7 @@ internal static class NativeMessagingHost
     private static object HandleDownload(JsonElement root)
     {
         string requestedUrl = ReadString(root, "url", required: true)!;
+        string? title = ReadString(root, "title", required: false);
         bool silent = ReadBoolean(root, "silent", defaultValue: false);
         bool experimental = ReadBoolean(root, "experimental", defaultValue: false);
         string normalizedUrl = ValidateAndNormalizeUrl(requestedUrl, experimental);
@@ -225,6 +354,12 @@ internal static class NativeMessagingHost
         startInfo.ArgumentList.Add("browser");
         startInfo.ArgumentList.Add("--url");
         startInfo.ArgumentList.Add(normalizedUrl);
+
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            startInfo.ArgumentList.Add("--title");
+            startInfo.ArgumentList.Add(title.Trim());
+        }
 
         if (silent)
         {
@@ -249,6 +384,135 @@ internal static class NativeMessagingHost
             launched = true,
             silent,
             experimental
+        };
+    }
+
+    private static object HandleOpenApp()
+    {
+        string appPath = ResolveCurrentAppPath();
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = appPath,
+            UseShellExecute = false,
+            CreateNoWindow = false,
+            WorkingDirectory = Path.GetDirectoryName(appPath) ?? AppContext.BaseDirectory
+        };
+
+        startInfo.ArgumentList.Add("--open-app");
+
+        using Process? process = Process.Start(startInfo);
+
+        if (process is null)
+        {
+            throw new NativeHostException("launch_failed", "DLP could not be opened");
+        }
+
+        Log("Opened DLP app");
+
+        return new
+        {
+            ok = true,
+            action = "open_app",
+            launched = true
+        };
+    }
+
+    private static object HandleListDownloads()
+    {
+        string downloadDirectory = Program.GetDownloadDirectory();
+        Directory.CreateDirectory(downloadDirectory);
+
+        var files = Directory.EnumerateFiles(downloadDirectory, "*", SearchOption.TopDirectoryOnly)
+            .Where(IsMediaFile)
+            .Select(filePath =>
+            {
+                FileInfo file = new(filePath);
+
+                return new
+                {
+                    fileName = file.Name,
+                    title = GetDisplayTitle(file.Name),
+                    extension = file.Extension.TrimStart('.').ToUpperInvariant(),
+                    mediaType = IsAudioFile(file.FullName) ? "audio" : "video",
+                    fileUrl = new Uri(file.FullName).AbsoluteUri,
+                    sizeBytes = file.Length,
+                    modified = file.LastWriteTimeUtc.ToString("O")
+                };
+            })
+            .OrderByDescending(file => file.modified)
+            .Take(200)
+            .ToArray();
+
+        return new
+        {
+            ok = true,
+            action = "list_downloads",
+            directory = downloadDirectory,
+            files
+        };
+    }
+
+    private static object HandleOpenDownload(JsonElement root)
+    {
+        string fileName = ReadString(root, "fileName", required: true)!;
+        string filePath = ResolveDownloadedMediaPath(fileName);
+        string appPath = ResolveCurrentAppPath();
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = appPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(appPath) ?? AppContext.BaseDirectory
+        };
+
+        startInfo.ArgumentList.Add("--open-download");
+        startInfo.ArgumentList.Add(Path.GetFileName(filePath));
+
+        using Process? process = Process.Start(startInfo);
+
+        if (process is null)
+        {
+            throw new NativeHostException("launch_failed", "DLP could not open the downloaded file");
+        }
+
+        Log($"Opened downloaded file through app: {filePath}");
+
+        return new
+        {
+            ok = true,
+            action = "open_download",
+            launched = true
+        };
+    }
+
+    private static object HandleOpenFolder()
+    {
+        string appPath = ResolveCurrentAppPath();
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = appPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(appPath) ?? AppContext.BaseDirectory
+        };
+
+        startInfo.ArgumentList.Add("--open-downloads");
+
+        using Process? process = Process.Start(startInfo);
+
+        if (process is null)
+        {
+            throw new NativeHostException("launch_failed", "DLP download folder could not be opened");
+        }
+
+        Log("Opened DLP download folder through app");
+
+        return new
+        {
+            ok = true,
+            action = "open_folder",
+            launched = true
         };
     }
 
@@ -278,6 +542,54 @@ internal static class NativeMessagingHost
         }
 
         return uri.AbsoluteUri;
+    }
+
+    private static string ResolveDownloadedMediaPath(string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName) || fileName != Path.GetFileName(fileName))
+        {
+            throw new NativeHostException("invalid_file", "Invalid downloaded file name");
+        }
+
+        string downloadDirectory = Path.GetFullPath(Program.GetDownloadDirectory());
+        string filePath = Path.GetFullPath(Path.Combine(downloadDirectory, fileName));
+        string directoryPrefix = downloadDirectory.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+        if (!filePath.StartsWith(directoryPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new NativeHostException("invalid_file", "Downloaded file must be inside the DLP download folder");
+        }
+
+        if (!File.Exists(filePath) || !IsMediaFile(filePath))
+        {
+            throw new NativeHostException("file_not_found", "Downloaded media file was not found");
+        }
+
+        return filePath;
+    }
+
+    private static bool IsMediaFile(string filePath)
+    {
+        string extension = Path.GetExtension(filePath);
+
+        return MediaExtensions.Any(mediaExtension =>
+            string.Equals(extension, mediaExtension, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsAudioFile(string filePath)
+    {
+        string extension = Path.GetExtension(filePath);
+
+        return AudioExtensions.Any(audioExtension =>
+            string.Equals(extension, audioExtension, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string GetDisplayTitle(string fileName)
+    {
+        string title = Path.GetFileNameWithoutExtension(fileName);
+        title = Regex.Replace(title, @"\s\[[^\]]+\](?:\s+copy-\d{8}-\d{6})?$", "", RegexOptions.IgnoreCase);
+
+        return string.IsNullOrWhiteSpace(title) ? fileName : title.Trim();
     }
 
     private static string ResolveCurrentAppPath()
@@ -446,13 +758,9 @@ internal static class NativeMessagingHost
 
 internal static class SilentDownloader
 {
-    public static async Task<int> DownloadVideoAsync(string url, string source)
+    public static async Task<int> DownloadVideoAsync(string url, string source, string? title)
     {
-        string downloadDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "Downloads",
-            "DLP");
-
+        string downloadDirectory = Program.GetDownloadDirectory();
         string? ytDlpPath = ToolResolver.ResolveToolPath("DLP_YTDLP_PATH", "yt-dlp.exe");
         string? ffmpegPath = ToolResolver.ResolveToolPath("DLP_FFMPEG_PATH", "ffmpeg.exe");
 
@@ -465,17 +773,9 @@ internal static class SilentDownloader
         Directory.CreateDirectory(downloadDirectory);
         Program.Log($"Starting silent video download from {source}: {url}");
 
-        using DuplicateReservation duplicateReservation = await DuplicateDetector.ReserveAsync(ytDlpPath, downloadDirectory, url);
-
-        if (duplicateReservation.Status == DuplicateStatus.AlreadyDownloaded)
+        if (TitleDuplicateDetector.TryFindExistingDownload(downloadDirectory, title, out string? existingFilePath))
         {
-            Program.Log($"Silent download skipped duplicate media id '{duplicateReservation.MediaId}': {duplicateReservation.ExistingFilePath}");
-            return 0;
-        }
-
-        if (duplicateReservation.Status == DuplicateStatus.AlreadyRunning)
-        {
-            Program.Log($"Silent download skipped active duplicate media id '{duplicateReservation.MediaId}'");
+            Program.Log($"Silent download skipped existing title '{title}': {existingFilePath}");
             return 0;
         }
 
@@ -556,196 +856,75 @@ internal static class SilentDownloader
     }
 }
 
-internal enum DuplicateStatus
+internal static class TitleDuplicateDetector
 {
-    Ready,
-    Unknown,
-    AlreadyDownloaded,
-    AlreadyRunning
-}
+    private static readonly Regex MediaIdSuffixRegex = new(@"\s\[[^\]]+\]$", RegexOptions.Compiled);
+    private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
+    private static readonly string[] TitleSuffixes =
+    [
+        " - YouTube",
+        " | TikTok",
+        " | X",
+        " / X",
+        " on X",
+        " | SoundCloud"
+    ];
 
-internal sealed class DuplicateReservation : IDisposable
-{
-    private readonly FileStream? _lockStream;
-    private readonly string? _lockPath;
-
-    public DuplicateReservation(DuplicateStatus status, string? mediaId, string? existingFilePath, FileStream? lockStream, string? lockPath)
-    {
-        Status = status;
-        MediaId = mediaId;
-        ExistingFilePath = existingFilePath;
-        _lockStream = lockStream;
-        _lockPath = lockPath;
-    }
-
-    public DuplicateStatus Status { get; }
-
-    public string? MediaId { get; }
-
-    public string? ExistingFilePath { get; }
-
-    public void Dispose()
-    {
-        _lockStream?.Dispose();
-
-        if (!string.IsNullOrWhiteSpace(_lockPath))
-        {
-            try
-            {
-                File.Delete(_lockPath);
-            }
-            catch (Exception ex)
-            {
-                Program.Log($"Duplicate lock cleanup failed: {ex.Message}");
-            }
-        }
-    }
-}
-
-internal static class DuplicateDetector
-{
-    private static readonly Regex MediaIdRegex = new(@"^[A-Za-z0-9_.:-]{3,160}$", RegexOptions.Compiled);
-
-    public static async Task<DuplicateReservation> ReserveAsync(string ytDlpPath, string downloadDirectory, string url)
-    {
-        string? mediaId = await TryGetMediaIdAsync(ytDlpPath, url);
-
-        if (string.IsNullOrWhiteSpace(mediaId))
-        {
-            Program.Log("Duplicate detector skipped: media id could not be resolved");
-            return new DuplicateReservation(DuplicateStatus.Unknown, null, null, null, null);
-        }
-
-        if (TryFindExistingDownload(downloadDirectory, mediaId, out string? existingFilePath))
-        {
-            return new DuplicateReservation(DuplicateStatus.AlreadyDownloaded, mediaId, existingFilePath, null, null);
-        }
-
-        string lockDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "DLP",
-            "locks");
-
-        Directory.CreateDirectory(lockDirectory);
-
-        string lockPath = Path.Combine(lockDirectory, $"{SanitizeFileName(mediaId)}.lock");
-
-        try
-        {
-            FileStream lockStream = new(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-            lockStream.SetLength(0);
-
-            byte[] details = Encoding.UTF8.GetBytes($"{DateTimeOffset.UtcNow:O}{Environment.NewLine}{url}{Environment.NewLine}");
-            await lockStream.WriteAsync(details);
-            await lockStream.FlushAsync();
-
-            return new DuplicateReservation(DuplicateStatus.Ready, mediaId, null, lockStream, lockPath);
-        }
-        catch (IOException)
-        {
-            return new DuplicateReservation(DuplicateStatus.AlreadyRunning, mediaId, null, null, null);
-        }
-    }
-
-    private static async Task<string?> TryGetMediaIdAsync(string ytDlpPath, string url)
-    {
-        ProcessStartInfo startInfo = new()
-        {
-            FileName = ytDlpPath,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
-
-        startInfo.ArgumentList.Add("--no-playlist");
-        startInfo.ArgumentList.Add("--skip-download");
-        startInfo.ArgumentList.Add("--print");
-        startInfo.ArgumentList.Add("id");
-        startInfo.ArgumentList.Add(url);
-
-        using Process process = new() { StartInfo = startInfo };
-
-        try
-        {
-            process.Start();
-
-            Task<string> outputTask = process.StandardOutput.ReadToEndAsync();
-            Task<string> errorTask = process.StandardError.ReadToEndAsync();
-            Task waitTask = process.WaitForExitAsync();
-
-            if (await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromSeconds(30))) != waitTask)
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch
-                {
-                    // Best effort cleanup after metadata timeout.
-                }
-
-                Program.Log("Duplicate detector timed out while resolving media id");
-                return null;
-            }
-
-            string output = await outputTask;
-            string error = await errorTask;
-
-            if (process.ExitCode != 0)
-            {
-                Program.Log($"Duplicate detector failed to resolve media id: {Shorten(error.Trim(), 300)}");
-                return null;
-            }
-
-            foreach (string line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-            {
-                string candidate = line.Trim();
-
-                if (MediaIdRegex.IsMatch(candidate))
-                {
-                    Program.Log($"Duplicate detector resolved media id: {candidate}");
-                    return candidate;
-                }
-            }
-
-            Program.Log($"Duplicate detector received no valid media id: {Shorten(output.Trim(), 300)}");
-            return null;
-        }
-        catch (Exception ex)
-        {
-            Program.Log($"Duplicate detector start failed: {ex}");
-            return null;
-        }
-    }
-
-    private static bool TryFindExistingDownload(string downloadDirectory, string mediaId, out string? existingFilePath)
+    public static bool TryFindExistingDownload(string downloadDirectory, string? title, out string? existingFilePath)
     {
         existingFilePath = null;
+        string normalizedTitle = NormalizeTitle(title);
 
-        if (!Directory.Exists(downloadDirectory))
+        if (string.IsNullOrWhiteSpace(normalizedTitle) || !Directory.Exists(downloadDirectory))
         {
             return false;
         }
-
-        string token = $"[{mediaId}]";
 
         foreach (string filePath in Directory.EnumerateFiles(downloadDirectory, "*", SearchOption.TopDirectoryOnly))
         {
             string fileName = Path.GetFileName(filePath);
 
-            if (!fileName.Contains(token, StringComparison.OrdinalIgnoreCase) || IsTemporaryDownloadFile(fileName))
+            if (IsTemporaryDownloadFile(fileName))
             {
                 continue;
             }
 
-            existingFilePath = filePath;
-            return true;
+            string existingTitle = MediaIdSuffixRegex.Replace(Path.GetFileNameWithoutExtension(fileName), "");
+
+            if (NormalizeTitle(existingTitle) == normalizedTitle)
+            {
+                existingFilePath = filePath;
+                return true;
+            }
         }
 
         return false;
+    }
+
+    public static string NormalizeTitle(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        string cleaned = value.Trim();
+
+        foreach (string suffix in TitleSuffixes)
+        {
+            if (cleaned.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                cleaned = cleaned[..^suffix.Length].Trim();
+                break;
+            }
+        }
+
+        foreach (char invalidCharacter in Path.GetInvalidFileNameChars())
+        {
+            cleaned = cleaned.Replace(invalidCharacter, ' ');
+        }
+
+        return WhitespaceRegex.Replace(cleaned, " ").Trim().ToLowerInvariant();
     }
 
     private static bool IsTemporaryDownloadFile(string fileName)
@@ -754,28 +933,6 @@ internal static class DuplicateDetector
             || fileName.EndsWith(".ytdl", StringComparison.OrdinalIgnoreCase)
             || fileName.EndsWith(".temp", StringComparison.OrdinalIgnoreCase)
             || fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string SanitizeFileName(string value)
-    {
-        StringBuilder builder = new(value.Length);
-
-        foreach (char character in value)
-        {
-            builder.Append(Path.GetInvalidFileNameChars().Contains(character) ? '_' : character);
-        }
-
-        return builder.ToString();
-    }
-
-    private static string Shorten(string value, int maxLength)
-    {
-        if (value.Length <= maxLength)
-        {
-            return value;
-        }
-
-        return string.Concat(value.AsSpan(0, maxLength - 1), "...");
     }
 }
 
@@ -1157,6 +1314,7 @@ internal sealed class DownloadForm : Form
 
     private readonly string _url;
     private readonly string _source;
+    private readonly string? _title;
     private readonly string _downloadDirectory;
     private readonly string? _ytDlpPath;
     private readonly string? _ffmpegPath;
@@ -1174,14 +1332,12 @@ internal sealed class DownloadForm : Form
     private bool _isUpdatingApp;
     private bool _isUpdatingYtDlp;
 
-    public DownloadForm(string url, string source)
+    public DownloadForm(string url, string source, string? title)
     {
         _url = url;
         _source = source;
-        _downloadDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "Downloads",
-            "DLP");
+        _title = title;
+        _downloadDirectory = Program.GetDownloadDirectory();
         _ytDlpPath = ToolResolver.ResolveToolPath("DLP_YTDLP_PATH", "yt-dlp.exe");
         _ffmpegPath = ToolResolver.ResolveToolPath("DLP_FFMPEG_PATH", "ffmpeg.exe");
 
@@ -1452,25 +1608,20 @@ internal sealed class DownloadForm : Form
         Program.Log($"Starting {kind.ToString().ToLowerInvariant()} download from {_source}: {_url}");
         SetPreparingDownloadState();
 
-        using DuplicateReservation duplicateReservation = await DuplicateDetector.ReserveAsync(_ytDlpPath, _downloadDirectory, _url);
+        bool createDuplicateCopy = false;
 
-        if (duplicateReservation.Status == DuplicateStatus.AlreadyDownloaded)
+        if (TitleDuplicateDetector.TryFindExistingDownload(_downloadDirectory, _title, out string? existingFilePath)
+            && existingFilePath is not null
+            && !ConfirmDuplicateDownload(existingFilePath))
         {
             SetStatus("Already downloaded", 0);
-            Program.Log($"Download skipped duplicate media id '{duplicateReservation.MediaId}': {duplicateReservation.ExistingFilePath}");
+            Program.Log($"Download skipped existing title '{_title}': {existingFilePath}");
             _isPreparingDownload = false;
             SetIdleButtons();
             return;
         }
 
-        if (duplicateReservation.Status == DuplicateStatus.AlreadyRunning)
-        {
-            SetStatus("Already downloading", 0);
-            Program.Log($"Download skipped active duplicate media id '{duplicateReservation.MediaId}'");
-            _isPreparingDownload = false;
-            SetIdleButtons();
-            return;
-        }
+        createDuplicateCopy = existingFilePath is not null;
 
         ProcessStartInfo startInfo = new()
         {
@@ -1484,7 +1635,7 @@ internal sealed class DownloadForm : Form
             StandardErrorEncoding = Encoding.UTF8
         };
 
-        AddCommonArguments(startInfo);
+        AddCommonArguments(startInfo, createDuplicateCopy);
 
         if (kind == DownloadKind.Video)
         {
@@ -1547,7 +1698,27 @@ internal sealed class DownloadForm : Form
         }
     }
 
-    private void AddCommonArguments(ProcessStartInfo startInfo)
+    private bool ConfirmDuplicateDownload(string existingFilePath)
+    {
+        string fileName = Path.GetFileName(existingFilePath);
+        DialogResult result = MessageBox.Show(
+            this,
+            $"This video looks already downloaded.{Environment.NewLine}{Environment.NewLine}{fileName}{Environment.NewLine}{Environment.NewLine}Continue anyway?",
+            "DLP",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button2);
+
+        if (result == DialogResult.Yes)
+        {
+            Program.Log($"Duplicate title accepted by user '{_title}': {existingFilePath}");
+            return true;
+        }
+
+        return false;
+    }
+
+    private void AddCommonArguments(ProcessStartInfo startInfo, bool createDuplicateCopy)
     {
         startInfo.ArgumentList.Add("--newline");
         startInfo.ArgumentList.Add("--no-playlist");
@@ -1556,7 +1727,9 @@ internal sealed class DownloadForm : Form
         startInfo.ArgumentList.Add("-P");
         startInfo.ArgumentList.Add(_downloadDirectory);
         startInfo.ArgumentList.Add("-o");
-        startInfo.ArgumentList.Add("%(title).200B [%(id)s].%(ext)s");
+        startInfo.ArgumentList.Add(createDuplicateCopy
+            ? $"%(title).200B [%(id)s] copy-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.%(ext)s"
+            : "%(title).200B [%(id)s].%(ext)s");
 
         if (_ffmpegPath is not null)
         {
@@ -1605,7 +1778,7 @@ internal sealed class DownloadForm : Form
         _updateYtDlpButton.Enabled = false;
         _progressBar.Visible = false;
         _progressBar.Value = 0;
-        SetStatus("Checking duplicate", 0);
+        SetStatus("Preparing download", 0);
     }
 
     private void SetIdleButtons()

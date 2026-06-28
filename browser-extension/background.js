@@ -1,5 +1,6 @@
 const HOST_NAME = "com.ibrhub.dlp";
 const MENU_ID = "dlp-download";
+
 const DEFAULT_SETTINGS = {
   silentDownload: false,
   autoHideOverlay: true,
@@ -60,7 +61,40 @@ function getContextMenuUrl(info, tab) {
     || (tab && tab.url);
 }
 
-function sendDownloadToNativeHost(url, callback) {
+function sendNativePayload(payload, callback) {
+  chrome.runtime.sendNativeMessage(HOST_NAME, payload, (response) => {
+    if (chrome.runtime.lastError) {
+      const error = {
+        ok: false,
+        error: "native_host_error",
+        message: chrome.runtime.lastError.message
+      };
+
+      console.log("DLP native host error:", chrome.runtime.lastError.message);
+
+      if (callback) {
+        callback(error);
+      }
+
+      return;
+    }
+
+    console.log("DLP native host response:", response);
+
+    if (callback) {
+      callback(response);
+    }
+  });
+}
+
+function sendDownloadToNativeHost(url, options, callback) {
+  if (typeof options === "function") {
+    callback = options;
+    options = {};
+  }
+
+  const details = options || {};
+
   if (!url) {
     const error = {
       ok: false,
@@ -81,36 +115,29 @@ function sendDownloadToNativeHost(url, callback) {
     const payload = {
       action: "download",
       url,
+      title: details.title || "",
       source: "chrome-extension",
       timestamp: new Date().toISOString(),
       silent: Boolean(settings.silentDownload),
       experimental: Boolean(settings.experimentalAllSites)
     };
 
-    chrome.runtime.sendNativeMessage(HOST_NAME, payload, (response) => {
-      if (chrome.runtime.lastError) {
-        const error = {
-          ok: false,
-          error: "native_host_error",
-          message: chrome.runtime.lastError.message
-        };
-
-        console.log("DLP native host error:", chrome.runtime.lastError.message);
-
-        if (callback) {
-          callback(error);
-        }
-
-        return;
-      }
-
-      console.log("DLP native host response:", response);
-
-      if (callback) {
-        callback(response);
-      }
-    });
+    sendNativePayload(payload, callback);
   });
+}
+
+function sendNativeCommand(action, details, callback) {
+  if (typeof details === "function") {
+    callback = details;
+    details = {};
+  }
+
+  sendNativePayload({
+    action,
+    ...(details || {}),
+    source: "chrome-extension",
+    timestamp: new Date().toISOString()
+  }, callback);
 }
 
 function createContextMenu() {
@@ -155,16 +182,30 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
   const url = getContextMenuUrl(info, tab);
 
-  sendDownloadToNativeHost(url);
+  sendDownloadToNativeHost(url, {
+    title: tab?.title || ""
+  });
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== "dlp-download-current-video") {
+  if (!message || typeof message !== "object") {
     return false;
   }
 
-  const url = message.url || (sender.tab && sender.tab.url);
+  if (message.type === "dlp-native-command") {
+    sendNativeCommand(message.action, {
+      fileName: message.fileName || ""
+    }, sendResponse);
+    return true;
+  }
 
-  sendDownloadToNativeHost(url, sendResponse);
-  return true;
+  if (message.type === "dlp-download-current-video") {
+    const url = message.url || (sender.tab && sender.tab.url);
+    const title = message.title || (sender.tab && sender.tab.title) || "";
+
+    sendDownloadToNativeHost(url, { title }, sendResponse);
+    return true;
+  }
+
+  return false;
 });

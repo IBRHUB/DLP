@@ -13,6 +13,9 @@ const statusElement = document.getElementById("status");
 const versionElement = document.getElementById("version");
 const ibrahimLink = document.getElementById("ibrahimLink");
 const sourceLink = document.getElementById("sourceLink");
+const openAppButton = document.getElementById("openApp");
+const openFolderButton = document.getElementById("openFolder");
+const openDashboardButton = document.getElementById("openDashboard");
 
 versionElement.textContent = chrome.runtime.getManifest().version;
 
@@ -68,6 +71,36 @@ function openTab(event, url) {
   event.preventDefault();
   chrome.tabs.create({ url });
 }
+
+function sendNativeCommand(action, statusText) {
+  setStatus(statusText);
+
+  chrome.runtime.sendMessage({ type: "dlp-native-command", action }, (response) => {
+    if (chrome.runtime.lastError) {
+      setStatus(chrome.runtime.lastError.message);
+      return;
+    }
+
+    if (!response || response.ok === false) {
+      setStatus(response?.message || "DLP request failed");
+      return;
+    }
+
+    setStatus("Done");
+  });
+}
+
+openAppButton.addEventListener("click", () => {
+  sendNativeCommand("open_app", "Opening DLP");
+});
+
+openFolderButton.addEventListener("click", () => {
+  sendNativeCommand("open_folder", "Opening folder");
+});
+
+openDashboardButton.addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html#videos") });
+});
 
 ibrahimLink.addEventListener("click", (event) => openTab(event, "https://ibrhub.net"));
 sourceLink.addEventListener("click", (event) => openTab(event, "https://github.com/IBRHUB/DLP"));
