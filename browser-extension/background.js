@@ -2,9 +2,9 @@ const HOST_NAME = "com.ibrhub.dlp";
 const MENU_ID = "dlp-download";
 const MAX_TAB_CANDIDATES = 50;
 const CANDIDATE_TTL_MS = 10 * 60 * 1000;
-const MEDIA_URL_RE = /\.(m3u8|mpd|mp4|webm|m4v|mov)(?:[?#]|$)/i;
-const STREAM_URL_RE = /(?:playlist|manifest|master|index)\.(?:m3u8|mpd)(?:[?#]|$)/i;
-const MEDIA_QUERY_RE = /[?&](?:file|filename|name|src)=[^&#]+\.(?:m3u8|mpd|mp4|webm|m4v|mov)(?:[&#]|$)/i;
+const MEDIA_URL_RE = /\.(m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[?#]|$)/i;
+const STREAM_URL_RE = /(?:playlist|manifest|master|index)\.(?:m3u8|m3u|mpd)(?:[?#]|$)/i;
+const MEDIA_QUERY_RE = /[?&](?:file|filename|name|src|url)=[^&#]+\.(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[&#]|$)/i;
 const AUDIO_ITAG_RE = /(?:^|[?&#])itag=(?:139|140|141|249|250|251)(?:[&#]|$)/i;
 
 const DEFAULT_SETTINGS = {
@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS = {
   overlayPosition: "auto",
   experimentalAllSites: false,
   deepScanner: false,
+  streamOverlay: false,
   browserCookies: false,
   cookieBrowser: "brave"
 };
@@ -73,6 +74,14 @@ function getSafeHttpsUrl(url) {
   }
 }
 
+function getUrlOrigin(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
 function getCookieBrowser(settings) {
   const value = String(settings.cookieBrowser || DEFAULT_SETTINGS.cookieBrowser).toLowerCase();
   return COOKIE_BROWSERS.has(value) ? value : DEFAULT_SETTINGS.cookieBrowser;
@@ -93,7 +102,7 @@ function getCandidateType(url) {
     return "direct-audio";
   }
 
-  if (extension === "m3u8") {
+  if (extension === "m3u8" || extension === "m3u") {
     return "hls";
   }
 
@@ -120,14 +129,14 @@ function getMediaExtension(url) {
   try {
     const parsed = new URL(url);
     const path = decodeURIComponent(parsed.pathname).replace(/\/+$/, "");
-    const pathMatch = path.match(/\.(m3u8|mpd|mp4|webm|m4v|mov)$/i);
+    const pathMatch = path.match(/\.(m3u8|m3u|mpd|mp4|webm|m4v|mov)$/i);
 
     if (pathMatch) {
       return pathMatch[1].toLowerCase();
     }
 
     const fileName = getQueryMediaFileName(parsed);
-    const queryMatch = fileName.match(/\.(m3u8|mpd|mp4|webm|m4v|mov)$/i);
+    const queryMatch = fileName.match(/\.(m3u8|m3u|mpd|mp4|webm|m4v|mov)$/i);
     return queryMatch ? queryMatch[1].toLowerCase() : "";
   } catch {
     return "";
@@ -145,7 +154,7 @@ function getQueryMediaFileName(parsedUrl) {
     const cleanValue = decodeURIComponent(value).split(/[?#]/)[0].replace(/\/+$/, "");
     const fileName = cleanValue.split(/[\\/]/).pop() || "";
 
-    if (/\.(?:m3u8|mpd|mp4|webm|m4v|mov)$/i.test(fileName)) {
+    if (/\.(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)$/i.test(fileName)) {
       return fileName.toLowerCase();
     }
   }
@@ -216,7 +225,7 @@ function mediaUrlShapeScore(url) {
   }
 }
 
-function toCandidate(url, source, time) {
+function toCandidate(url, source, time, context) {
   const safeUrl = getSafeHttpsUrl(url);
 
   if (!safeUrl) {
@@ -229,12 +238,15 @@ function toCandidate(url, source, time) {
     url: safeUrl,
     type,
     source: source || "unknown",
-    time: time || Date.now()
+    time: time || Date.now(),
+    pageUrl: context?.pageUrl || "",
+    origin: context?.origin || "",
+    userAgent: context?.userAgent || ""
   };
 }
 
 function normalizeCandidate(item) {
-  const candidate = item && toCandidate(item.url, item.source, item.time);
+  const candidate = item && toCandidate(item.url, item.source, item.time, item);
 
   if (candidate && item.type) {
     candidate.type = item.type;
@@ -336,6 +348,8 @@ function candidateScore(item) {
     score += 100;
   } else if (item.source === "network.redirect") {
     score += 90;
+  } else if (item.source === "clappr.source" || item.source === "hls.loadSource") {
+    score += 130;
   } else if (item.source === "network") {
     score += 24;
   } else if (item.source === "performance") {
@@ -473,7 +487,11 @@ function rememberNetworkCandidate(details, source = "network") {
     return;
   }
 
-  const candidate = toCandidate(details.url, source);
+  const candidate = toCandidate(details.url, source, undefined, {
+    pageUrl: details.documentUrl || details.initiator || "",
+    origin: details.initiator || "",
+    userAgent: navigator.userAgent || ""
+  });
 
   if (!candidate) {
     return;
@@ -558,6 +576,226 @@ function sendNativeCommand(action, details, callback) {
     source: "chrome-extension",
     timestamp: new Date().toISOString()
   }, callback);
+}
+
+function getHlsFetchOptions(candidate, extraHeaders) {
+  const headers = {
+    ...(extraHeaders || {})
+  };
+
+  for (const key of Object.keys(headers)) {
+    if (!headers[key]) {
+      delete headers[key];
+    }
+  }
+
+  return {
+    cache: "no-store",
+    credentials: "omit",
+    headers
+  };
+}
+
+async function fetchText(url, candidate) {
+  const response = await fetch(url, getHlsFetchOptions(candidate, {
+    Accept: "application/vnd.apple.mpegurl, application/x-mpegURL, */*"
+  }));
+
+  if (!response.ok) {
+    throw new Error(`playlist_http_${response.status}`);
+  }
+
+  return response.text();
+}
+
+function getAbsoluteHlsLine(line, baseUrl) {
+  const trimmed = line.trim();
+
+  if (!trimmed || trimmed.startsWith("#")) {
+    return line.replace(/URI="([^"]+)"/g, (match, uri) => {
+      try {
+        return `URI="${new URL(uri, baseUrl).href}"`;
+      } catch {
+        return match;
+      }
+    });
+  }
+
+  try {
+    return new URL(trimmed, baseUrl).href;
+  } catch {
+    return trimmed;
+  }
+}
+
+function selectBestVariantUrl(playlistText, baseUrl) {
+  const lines = playlistText.split(/\r?\n/);
+  let pendingBandwidth = 0;
+  let best = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("#EXT-X-STREAM-INF:")) {
+      const match = trimmed.match(/BANDWIDTH=(\d+)/i);
+      pendingBandwidth = match ? Number(match[1]) : 1;
+      continue;
+    }
+
+    if (pendingBandwidth && trimmed && !trimmed.startsWith("#")) {
+      try {
+        const url = new URL(trimmed, baseUrl).href;
+
+        if (!best || pendingBandwidth > best.bandwidth) {
+          best = { url, bandwidth: pendingBandwidth };
+        }
+      } catch {
+        // Keep scanning other variants.
+      }
+
+      pendingBandwidth = 0;
+    }
+  }
+
+  return best?.url || "";
+}
+
+function findMpegTsOffset(bytes) {
+  const maxOffset = Math.min(256, bytes.length - 376);
+
+  for (let offset = 0; offset <= maxOffset; offset += 1) {
+    if (bytes[offset] === 0x47 && bytes[offset + 188] === 0x47 && bytes[offset + 376] === 0x47) {
+      return offset;
+    }
+  }
+
+  return 0;
+}
+
+async function fetchSegmentProbe(url, candidate) {
+  const response = await fetch(url, getHlsFetchOptions(candidate, {
+    Accept: "*/*",
+    Range: "bytes=0-1199"
+  }));
+
+  if (!response.ok && response.status !== 206) {
+    return 0;
+  }
+
+  return findMpegTsOffset(new Uint8Array(await response.arrayBuffer()));
+}
+
+async function fetchContentLength(url, candidate) {
+  try {
+    const response = await fetch(url, {
+      ...getHlsFetchOptions(candidate, { Accept: "*/*" }),
+      method: "HEAD"
+    });
+    const length = Number(response.headers.get("content-length"));
+
+    if (response.ok && Number.isFinite(length) && length > 0) {
+      return length;
+    }
+  } catch {
+    // Some hosts reject HEAD. Fall back to a one-byte range request.
+  }
+
+  const response = await fetch(url, getHlsFetchOptions(candidate, {
+    Accept: "*/*",
+    Range: "bytes=0-0"
+  }));
+  const contentRange = response.headers.get("content-range") || "";
+  const match = contentRange.match(/\/(\d+)$/);
+
+  return match ? Number(match[1]) : 0;
+}
+
+async function buildVlcReadyHlsPlaylist(candidate) {
+  let playlistUrl = candidate.url;
+  let playlistText = await fetchText(playlistUrl, candidate);
+  const variantUrl = selectBestVariantUrl(playlistText, playlistUrl);
+
+  if (variantUrl) {
+    playlistUrl = variantUrl;
+    playlistText = await fetchText(playlistUrl, candidate);
+  }
+
+  if (!playlistText.trimStart().startsWith("#EXTM3U")) {
+    throw new Error("not_hls_playlist");
+  }
+
+  const lines = playlistText.split(/\r?\n/);
+  const mediaUrls = lines
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((line) => {
+      try {
+        return new URL(line, playlistUrl).href;
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean);
+
+  const prefixBytes = mediaUrls.length ? await fetchSegmentProbe(mediaUrls[0], candidate) : 0;
+  const output = [];
+  const hasVersion = lines.some((line) => line.trim().toUpperCase().startsWith("#EXT-X-VERSION:"));
+
+  for (const line of lines) {
+    const absoluteLine = getAbsoluteHlsLine(line, playlistUrl);
+    const trimmed = absoluteLine.trim();
+
+    if (prefixBytes > 0 && trimmed.toUpperCase().startsWith("#EXT-X-VERSION:")) {
+      const currentVersion = Number(trimmed.split(":")[1]);
+      output.push(`#EXT-X-VERSION:${Math.max(4, Number.isFinite(currentVersion) ? currentVersion : 4)}`);
+      continue;
+    }
+
+    if (prefixBytes > 0 && trimmed && !trimmed.startsWith("#")) {
+      const length = await fetchContentLength(trimmed, candidate);
+
+      if (length > prefixBytes) {
+        output.push(`#EXT-X-BYTERANGE:${length - prefixBytes}@${prefixBytes}`);
+      }
+    }
+
+    output.push(absoluteLine);
+
+    if (prefixBytes > 0 && !hasVersion && trimmed === "#EXTM3U") {
+      output.push("#EXT-X-VERSION:4");
+    }
+  }
+
+  return {
+    playlist: output.join("\n"),
+    transformed: prefixBytes > 0,
+    prefixBytes
+  };
+}
+
+function buildSimplePlaylist(candidate) {
+  const referrer = candidate.pageUrl || "";
+  const userAgent = candidate.userAgent || navigator.userAgent || "";
+
+  return [
+    "#EXTM3U",
+    "#EXTINF:-1,DLP Stream",
+    referrer ? `#EXTVLCOPT:http-referrer=${referrer}` : "",
+    userAgent ? `#EXTVLCOPT:http-user-agent=${userAgent}` : "",
+    candidate.url
+  ].filter(Boolean).join("\n");
+}
+
+async function buildStreamPlaylist(candidate) {
+  if (candidate.type === "hls") {
+    return buildVlcReadyHlsPlaylist(candidate);
+  }
+
+  return {
+    playlist: buildSimplePlaylist(candidate),
+    transformed: false,
+    prefixBytes: 0
+  };
 }
 
 function createContextMenu() {
@@ -677,13 +915,111 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "dlp-remember-stream-candidate") {
+    const tabId = sender.tab?.id;
+    const sourceUrl = sender.url || sender.tab?.url || "";
+    const candidate = normalizeCandidate({
+      ...(message.candidate || {}),
+      pageUrl: message.candidate?.pageUrl || sourceUrl,
+      origin: message.candidate?.origin || getUrlOrigin(sourceUrl),
+      userAgent: message.candidate?.userAgent || navigator.userAgent || ""
+    });
+
+    if (typeof tabId === "number" && tabId >= 0 && candidate) {
+      const list = getTabCandidates(tabId);
+      list.push(candidate);
+      tabCandidates.set(tabId, pruneCandidates(list));
+    }
+
+    sendResponse({ ok: Boolean(candidate) });
+    return false;
+  }
+
+  if (message.type === "dlp-get-stream-candidates") {
+    const candidates = rankCandidates([
+      ...(Array.isArray(message.candidates) ? message.candidates : []),
+      ...getTabCandidates(sender.tab?.id)
+    ]).filter((candidate) =>
+      ["hls", "dash", "direct-mp4", "direct-webm", "direct-video", "direct-audio"].includes(candidate.type));
+
+    sendResponse({
+      ok: true,
+      candidates
+    });
+    return false;
+  }
+
+  if (message.type === "dlp-open-stream") {
+    const candidate = normalizeCandidate({
+      ...(message.candidate || {}),
+      pageUrl: message.candidate?.pageUrl || sender.url || sender.tab?.url || "",
+      origin: message.candidate?.origin || getUrlOrigin(sender.url || sender.tab?.url || ""),
+      userAgent: message.candidate?.userAgent || navigator.userAgent || ""
+    });
+
+    if (!candidate || candidate.type !== "hls") {
+      sendResponse({
+        ok: false,
+        message: "Live playback needs an HLS stream"
+      });
+      return false;
+    }
+
+    sendNativePayload({
+      action: "open_stream",
+      url: candidate.url,
+      title: message.title || sender.tab?.title || "",
+      pageUrl: candidate.pageUrl || sender.url || sender.tab?.url || "",
+      userAgent: candidate.userAgent || navigator.userAgent || "",
+      experimental: true,
+      source: "chrome-extension",
+      timestamp: new Date().toISOString()
+    }, sendResponse);
+    return true;
+  }
+
+  if (message.type === "dlp-build-stream-playlist") {
+    const candidate = normalizeCandidate({
+      ...(message.candidate || {}),
+      pageUrl: message.candidate?.pageUrl || sender.url || sender.tab?.url || "",
+      origin: message.candidate?.origin || getUrlOrigin(sender.url || sender.tab?.url || ""),
+      userAgent: message.candidate?.userAgent || navigator.userAgent || ""
+    });
+
+    if (!candidate) {
+      sendResponse({
+        ok: false,
+        message: "Missing stream URL"
+      });
+      return false;
+    }
+
+    buildStreamPlaylist(candidate).then(
+      (result) => {
+        sendResponse({
+          ok: true,
+          playlist: result.playlist,
+          transformed: result.transformed,
+          prefixBytes: result.prefixBytes
+        });
+      },
+      (error) => {
+        sendResponse({
+          ok: false,
+          message: error?.message || "Could not build stream playlist"
+        });
+      }
+    );
+    return true;
+  }
+
   return false;
 });
 
 if (chrome.webRequest?.onBeforeRequest) {
   chrome.webRequest.onBeforeRequest.addListener(
     (details) => {
-      if (settingsCache.experimentalAllSites) {
+      if (settingsCache.experimentalAllSites || settingsCache.streamOverlay) {
         rememberNetworkCandidate(details);
         return;
       }
@@ -693,7 +1029,7 @@ if (chrome.webRequest?.onBeforeRequest) {
       }
 
       getSettings((settings) => {
-        if (settings.experimentalAllSites) {
+        if (settings.experimentalAllSites || settings.streamOverlay) {
           rememberNetworkCandidate(details);
         }
       });
@@ -717,7 +1053,7 @@ if (chrome.webRequest?.onBeforeRedirect) {
         url: details.redirectUrl
       };
 
-      if (settingsCache.experimentalAllSites) {
+      if (settingsCache.experimentalAllSites || settingsCache.streamOverlay) {
         rememberNetworkCandidate(redirectedDetails, "network.redirect");
         return;
       }
@@ -727,7 +1063,7 @@ if (chrome.webRequest?.onBeforeRedirect) {
       }
 
       getSettings((settings) => {
-        if (settings.experimentalAllSites) {
+        if (settings.experimentalAllSites || settings.streamOverlay) {
           rememberNetworkCandidate(redirectedDetails, "network.redirect");
         }
       });

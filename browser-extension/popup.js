@@ -4,6 +4,7 @@ const DEFAULT_SETTINGS = {
   overlayPosition: "auto",
   experimentalAllSites: false,
   deepScanner: false,
+  streamOverlay: false,
   browserCookies: false,
   cookieBrowser: "brave"
 };
@@ -13,6 +14,7 @@ const autoHideOverlayInput = document.getElementById("autoHideOverlay");
 const experimentalAllSitesInput = document.getElementById("experimentalAllSites");
 const deepScannerInput = document.getElementById("deepScanner");
 const deepScannerRow = document.getElementById("deepScannerRow");
+const streamOverlayInput = document.getElementById("streamOverlay");
 const browserCookiesInput = document.getElementById("browserCookies");
 const cookieBrowserInput = document.getElementById("cookieBrowser");
 const cookieBrowserRow = document.getElementById("cookieBrowserRow");
@@ -38,6 +40,7 @@ function render(settings, statusText = "") {
   deepScannerInput.checked = Boolean(settings.experimentalAllSites && settings.deepScanner);
   deepScannerInput.disabled = !settings.experimentalAllSites;
   deepScannerRow.classList.toggle("is-disabled", !settings.experimentalAllSites);
+  streamOverlayInput.checked = Boolean(settings.streamOverlay);
   browserCookiesInput.checked = Boolean(settings.browserCookies);
   cookieBrowserInput.disabled = !settings.browserCookies;
   cookieBrowserRow.classList.toggle("is-disabled", !settings.browserCookies);
@@ -69,6 +72,10 @@ experimentalAllSitesInput.addEventListener("change", () => {
 
 deepScannerInput.addEventListener("change", () => {
   saveSettings({ deepScanner: deepScannerInput.checked });
+});
+
+streamOverlayInput.addEventListener("change", () => {
+  saveSettings({ streamOverlay: streamOverlayInput.checked });
 });
 
 browserCookiesInput.addEventListener("change", () => {

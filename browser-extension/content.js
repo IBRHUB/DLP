@@ -1,16 +1,19 @@
 (function () {
   const BUTTON_ID = "dlp-video-download-button";
+  const STREAM_PANEL_ID = "dlp-video-stream-panel";
   const STYLE_ID = "dlp-video-download-style";
   const TOAST_ID = "dlp-video-download-toast";
   const BUTTON_WIDTH = 58;
   const BUTTON_HEIGHT = 24;
   const BUTTON_OFFSET = 12;
   const AUTO_HIDE_DELAY_MS = 2600;
+  const STREAM_PANEL_HIDE_DELAY_MS = 4200;
   const DEEP_SCAN_WAIT_MS = 1600;
   const EXPERIMENTAL_POLL_MS = 120;
-  const MEDIA_URL_RE = /\.(m3u8|mpd|mp4|webm|m4v|mov)(?:[?#]|$)/i;
-  const STREAM_URL_RE = /(?:playlist|manifest|master|index)\.(?:m3u8|mpd)(?:[?#]|$)/i;
-  const MEDIA_QUERY_RE = /[?&](?:file|filename|name|src)=[^&#]+\.(?:m3u8|mpd|mp4|webm|m4v|mov)(?:[&#]|$)/i;
+  const MAX_PAGE_STREAM_CANDIDATES = 50;
+  const MEDIA_URL_RE = /\.(m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[?#]|$)/i;
+  const STREAM_URL_RE = /(?:playlist|manifest|master|index)\.(?:m3u8|m3u|mpd)(?:[?#]|$)/i;
+  const MEDIA_QUERY_RE = /[?&](?:file|filename|name|src|url)=[^&#]+\.(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[&#]|$)/i;
   const AUDIO_ITAG_RE = /(?:^|[?&#])itag=(?:139|140|141|249|250|251)(?:[&#]|$)/i;
   const DEFAULT_SETTINGS = {
     silentDownload: false,
@@ -18,6 +21,7 @@
     overlayPosition: "auto",
     experimentalAllSites: false,
     deepScanner: false,
+    streamOverlay: false,
     browserCookies: false,
     cookieBrowser: "brave"
   };
@@ -25,11 +29,13 @@
   let lastUrl = location.href;
   let refreshTimer = null;
   let hideTimer = null;
+  let streamPanelHideTimer = null;
   let toastTimer = null;
   let lastActivityAt = 0;
   let extensionActive = true;
   let observer = null;
   let settings = { ...DEFAULT_SETTINGS };
+  let pageStreamCandidates = [];
   let tikTokScriptUrlCache = null;
   let tikTokScriptUrlCacheAt = 0;
   let tikTokItemsCache = null;
@@ -53,12 +59,234 @@
     extensionActive = false;
     window.clearTimeout(refreshTimer);
     window.clearTimeout(hideTimer);
+    window.clearTimeout(streamPanelHideTimer);
     window.clearTimeout(toastTimer);
     removeButton();
 
     if (observer) {
       observer.disconnect();
     }
+  }
+
+  function installPageStreamHook() {
+    const target = document.documentElement || document.head || document.body;
+
+    if (!target) {
+      document.addEventListener("DOMContentLoaded", installPageStreamHook, { once: true });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.textContent = `(${function () {
+      if (window.__DLP_STREAM_HOOK__) {
+        return;
+      }
+
+      window.__DLP_STREAM_HOOK__ = true;
+
+      const mediaUrlRe = /https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[^\s"'<>\\]*)?/gi;
+      const relativeMediaUrlRe = /(?:^|[\s"'(])((?:\/|\.\.?\/)[^\s"'<>\\]+?\.(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[^\s"'<>\\]*)?)/gi;
+
+      function clean(value) {
+        return String(value || "")
+          .replace(/\\u0026/gi, "&")
+          .replace(/\\\//g, "/")
+          .replace(/&amp;/gi, "&");
+      }
+
+      function emit(rawUrl, source) {
+        try {
+          const url = new URL(clean(rawUrl), location.href);
+
+          if (url.protocol === "https:") {
+            window.postMessage({
+              type: "dlp-stream-candidate",
+              url: url.href,
+              candidateSource: source,
+              pageUrl: location.href,
+              origin: location.origin,
+              userAgent: navigator.userAgent
+            }, "*");
+          }
+        } catch {
+          // Ignore values that are not URLs.
+        }
+      }
+
+      function scanText(text, source, allowDecode) {
+        if (!text || typeof text !== "string" || text.length > 2000000) {
+          return;
+        }
+
+        const body = clean(text);
+
+        mediaUrlRe.lastIndex = 0;
+
+        for (const match of body.matchAll(mediaUrlRe)) {
+          emit(match[0], source);
+        }
+
+        relativeMediaUrlRe.lastIndex = 0;
+
+        let relativeMatch = relativeMediaUrlRe.exec(body);
+
+        while (relativeMatch) {
+          emit(relativeMatch[1], source);
+          relativeMatch = relativeMediaUrlRe.exec(body);
+        }
+
+        if (allowDecode && /%3a%2f%2f|%2f|%2e(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)/i.test(body)) {
+          try {
+            const decoded = decodeURIComponent(body);
+
+            if (decoded !== body) {
+              scanText(decoded, source, false);
+            }
+          } catch {
+            // Ignore malformed encoded response text.
+          }
+        }
+      }
+
+      function shouldReadResponse(response, url) {
+        const contentType = response?.headers?.get?.("content-type") || "";
+        return /\.(?:m3u8|m3u|mpd)(?:[?#]|$)/i.test(url || "")
+          || /json|text|xml|mpegurl|dash|javascript/i.test(contentType);
+      }
+
+      if (typeof window.fetch === "function" && !window.fetch.__dlpHooked) {
+        const originalFetch = window.fetch;
+
+        window.fetch = function () {
+          const requestUrl = typeof arguments[0] === "string" ? arguments[0] : arguments[0]?.url;
+          emit(requestUrl, "fetch.request");
+
+          return originalFetch.apply(this, arguments).then((response) => {
+            try {
+              const responseUrl = response.url || requestUrl || "";
+              emit(responseUrl, "fetch.response");
+
+              if (shouldReadResponse(response, responseUrl)) {
+                response.clone().text().then((text) => {
+                  scanText(text, "fetch.body", true);
+                }).catch(() => {});
+              }
+            } catch {
+              // Keep page fetch behavior unchanged.
+            }
+
+            return response;
+          });
+        };
+
+        window.fetch.__dlpHooked = true;
+      }
+
+      if (window.XMLHttpRequest?.prototype && !window.XMLHttpRequest.prototype.__dlpHooked) {
+        const originalOpen = window.XMLHttpRequest.prototype.open;
+        const originalSend = window.XMLHttpRequest.prototype.send;
+
+        window.XMLHttpRequest.prototype.open = function (method, url) {
+          this.__dlpStreamUrl = url ? String(url) : "";
+          emit(this.__dlpStreamUrl, "xhr.request");
+          return originalOpen.apply(this, arguments);
+        };
+
+        window.XMLHttpRequest.prototype.send = function () {
+          this.addEventListener("loadend", () => {
+            try {
+              emit(this.responseURL || this.__dlpStreamUrl, "xhr.response");
+
+              if (typeof this.responseText === "string") {
+                scanText(this.responseText, "xhr.body", true);
+              }
+            } catch {
+              // Keep page XHR behavior unchanged.
+            }
+          }, { once: true });
+
+          return originalSend.apply(this, arguments);
+        };
+
+        window.XMLHttpRequest.prototype.__dlpHooked = true;
+      }
+
+      function patchHls() {
+        const hlsPrototype = window.Hls?.prototype;
+
+        if (!hlsPrototype || hlsPrototype.__dlpHooked || typeof hlsPrototype.loadSource !== "function") {
+          return Boolean(hlsPrototype?.__dlpHooked);
+        }
+
+        const originalLoadSource = hlsPrototype.loadSource;
+
+        hlsPrototype.loadSource = function (url) {
+          emit(url, "hls.loadSource");
+          return originalLoadSource.apply(this, arguments);
+        };
+
+        hlsPrototype.__dlpHooked = true;
+        return true;
+      }
+
+      function patchClappr() {
+        const clappr = window.Clappr;
+
+        if (!clappr?.Player || clappr.Player.__dlpHooked) {
+          return Boolean(clappr?.Player?.__dlpHooked);
+        }
+
+        const OriginalPlayer = clappr.Player;
+
+        function DlpPlayerWrapper() {
+          const options = arguments[0] || {};
+
+          if (options.source) {
+            emit(options.source, "clappr.source");
+          }
+
+          return Reflect.construct(OriginalPlayer, Array.from(arguments), new.target || DlpPlayerWrapper);
+        }
+
+        Object.setPrototypeOf(DlpPlayerWrapper, OriginalPlayer);
+        DlpPlayerWrapper.prototype = OriginalPlayer.prototype;
+        DlpPlayerWrapper.__dlpHooked = true;
+        clappr.Player = DlpPlayerWrapper;
+        return true;
+      }
+
+      let playerPatchAttempts = 0;
+      const playerPatchTimer = window.setInterval(() => {
+        playerPatchAttempts += 1;
+
+        const hlsReady = patchHls();
+        const clapprReady = patchClappr();
+
+        if ((hlsReady && clapprReady) || playerPatchAttempts >= 40) {
+          window.clearInterval(playerPatchTimer);
+        }
+      }, 250);
+
+      patchHls();
+      patchClappr();
+    }.toString()})();`;
+
+    target.appendChild(script);
+    script.remove();
+  }
+
+  function watchPageStreamMessages() {
+    window.addEventListener("message", (event) => {
+      if (event.source !== window || !event.data || event.data.type !== "dlp-stream-candidate") {
+        return;
+      }
+
+      rememberPageStreamCandidate(event.data.url, event.data.candidateSource || "page.stream", {
+        pageUrl: event.data.pageUrl || "",
+        origin: event.data.origin || "",
+        userAgent: event.data.userAgent || ""
+      });
+    }, true);
   }
 
   function loadSettings(callback) {
@@ -103,6 +331,10 @@
       }
 
       if (changed) {
+        if (Object.prototype.hasOwnProperty.call(changes, "streamOverlay") && !settings.streamOverlay) {
+          removeStreamPanel();
+        }
+
         showButtonForInteraction();
         scheduleRefresh();
       }
@@ -133,6 +365,14 @@
     }
 
     return null;
+  }
+
+  function isTopFrame() {
+    try {
+      return window.top === window;
+    } catch {
+      return false;
+    }
   }
 
   function isYouTubeShortsPage() {
@@ -538,7 +778,11 @@
       return !ignoredPaths.some((ignoredPath) => path === ignoredPath || path.startsWith(`${ignoredPath}/`));
     }
 
-    return Boolean(settings.experimentalAllSites && location.protocol === "https:" && getVisibleVideo());
+    return Boolean(
+      (settings.experimentalAllSites || settings.streamOverlay)
+        && location.protocol === "https:"
+        && (getVisibleVideo() || (isTopFrame() && getVisibleMediaFrame()) || pageStreamCandidates.length)
+    );
   }
 
   function getDownloadUrl() {
@@ -624,10 +868,12 @@
       }
     }
 
+    candidates.push(...pageStreamCandidates);
+
     return rankExperimentalCandidates(candidates.filter(Boolean));
   }
 
-  function createExperimentalCandidate(rawUrl, source, time) {
+  function createExperimentalCandidate(rawUrl, source, time, context) {
     if (!rawUrl) {
       return null;
     }
@@ -643,10 +889,47 @@
         url: parsed.href,
         type: getCandidateType(parsed.href),
         source,
-        time: time || Date.now()
+        time: time || Date.now(),
+        pageUrl: context?.pageUrl || location.href,
+        origin: context?.origin || location.origin,
+        userAgent: context?.userAgent || navigator.userAgent || ""
       };
     } catch {
       return null;
+    }
+  }
+
+  function rememberPageStreamCandidate(rawUrl, source, context) {
+    const candidate = createExperimentalCandidate(rawUrl, source || "page.stream", undefined, context);
+
+    if (!candidate) {
+      return;
+    }
+
+    pageStreamCandidates = rankExperimentalCandidates([...pageStreamCandidates, candidate])
+      .slice(0, MAX_PAGE_STREAM_CANDIDATES);
+
+    if (settings.streamOverlay) {
+      scheduleRefresh();
+    }
+
+    sendStreamCandidateToBackground(candidate);
+  }
+
+  function sendStreamCandidateToBackground(candidate) {
+    if (!hasRuntime()) {
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage({
+        type: "dlp-remember-stream-candidate",
+        candidate
+      }, () => {
+        void chrome.runtime.lastError;
+      });
+    } catch {
+      // The page may outlive an extension reload.
     }
   }
 
@@ -658,7 +941,7 @@
       return "direct-audio";
     }
 
-    if (extension === "m3u8") {
+    if (extension === "m3u8" || extension === "m3u") {
       return "hls";
     }
 
@@ -685,14 +968,14 @@
     try {
       const parsed = new URL(url, location.href);
       const path = decodeURIComponent(parsed.pathname).replace(/\/+$/, "");
-      const pathMatch = path.match(/\.(m3u8|mpd|mp4|webm|m4v|mov)$/i);
+      const pathMatch = path.match(/\.(m3u8|m3u|mpd|mp4|webm|m4v|mov)$/i);
 
       if (pathMatch) {
         return pathMatch[1].toLowerCase();
       }
 
       const fileName = getQueryMediaFileName(parsed);
-      const queryMatch = fileName.match(/\.(m3u8|mpd|mp4|webm|m4v|mov)$/i);
+      const queryMatch = fileName.match(/\.(m3u8|m3u|mpd|mp4|webm|m4v|mov)$/i);
       return queryMatch ? queryMatch[1].toLowerCase() : "";
     } catch {
       return "";
@@ -710,7 +993,7 @@
       const cleanValue = decodeURIComponent(value).split(/[?#]/)[0].replace(/\/+$/, "");
       const fileName = cleanValue.split(/[\\/]/).pop() || "";
 
-      if (/\.(?:m3u8|mpd|mp4|webm|m4v|mov)$/i.test(fileName)) {
+      if (/\.(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)$/i.test(fileName)) {
         return fileName.toLowerCase();
       }
     }
@@ -895,6 +1178,28 @@
       })[0] || null;
   }
 
+  function getVisibleMediaFrame() {
+    if (!extensionActive) {
+      return null;
+    }
+
+    const frames = Array.from(document.querySelectorAll("iframe[src]"));
+
+    return frames
+      .filter((frame) => {
+        const rect = frame.getBoundingClientRect();
+        return frame.src.startsWith("https://")
+          && rect.width >= 180
+          && rect.height >= 120
+          && isRectVisible(rect);
+      })
+      .sort((first, second) => {
+        const firstRect = first.getBoundingClientRect();
+        const secondRect = second.getBoundingClientRect();
+        return getVisibleArea(secondRect) - getVisibleArea(firstRect);
+      })[0] || null;
+  }
+
   function getYouTubePlayerElement() {
     if (isYouTubeShortsPage()) {
       const activeReel = document.querySelector("ytd-reel-video-renderer[is-active]");
@@ -1059,8 +1364,8 @@
       return getSoundCloudPlayerElement();
     }
 
-    if (settings.experimentalAllSites) {
-      return getVisibleVideo();
+    if (settings.experimentalAllSites || settings.streamOverlay) {
+      return getVisibleVideo() || (isTopFrame() ? getVisibleMediaFrame() : null);
     }
 
     return null;
@@ -1075,6 +1380,7 @@
     style.id = STYLE_ID;
     style.textContent = `
       #${BUTTON_ID},
+      #${STREAM_PANEL_ID},
       #${TOAST_ID} {
         --dlp-bg: #0d1117;
         --dlp-surface: #151b23;
@@ -1144,6 +1450,143 @@
         transform: translateY(-4px);
       }
 
+      #${STREAM_PANEL_ID} {
+        position: fixed;
+        z-index: 2147483647;
+        width: min(520px, calc(100vw - 20px));
+        max-height: min(340px, calc(100vh - 40px));
+        border: 1px solid color-mix(in srgb, var(--dlp-border-strong) 78%, transparent);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--dlp-bg) 97%, transparent);
+        color: var(--dlp-text-primary);
+        box-shadow: 0 18px 52px color-mix(in srgb, #000 42%, transparent);
+        overflow: hidden;
+        backdrop-filter: blur(10px);
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        transition: opacity 150ms ease, transform 150ms ease;
+      }
+
+      #${STREAM_PANEL_ID}.dlp-stream-panel-hidden {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-4px) scale(0.985);
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-head,
+      #${STREAM_PANEL_ID} .dlp-stream-row {
+        display: grid;
+        align-items: center;
+        gap: 8px;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-head {
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        padding: 10px 12px;
+        border-bottom: 1px solid color-mix(in srgb, var(--dlp-border) 70%, transparent);
+        font: 700 12px/1.2 Arial, sans-serif;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-list {
+        display: grid;
+        gap: 7px;
+        max-height: 276px;
+        padding: 10px 12px 12px;
+        overflow: auto;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-row {
+        grid-template-columns: 50px minmax(0, 1fr) 52px 46px 46px;
+        min-height: 44px;
+        padding: 7px;
+        border: 1px solid color-mix(in srgb, var(--dlp-border) 72%, transparent);
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--dlp-surface) 78%, transparent);
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-type {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        height: 28px;
+        border-radius: 5px;
+        background: color-mix(in srgb, var(--dlp-accent-interactive) 11%, transparent);
+        color: var(--dlp-accent-interactive);
+        font: 800 11px/1 Arial, sans-serif;
+        text-transform: uppercase;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-url,
+      #${STREAM_PANEL_ID} .dlp-stream-empty {
+        min-width: 0;
+        color: var(--dlp-text-secondary);
+        font: 12px/1.35 Consolas, "Cascadia Mono", monospace;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-empty {
+        padding: 8px;
+        white-space: normal;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-copy,
+      #${STREAM_PANEL_ID} .dlp-stream-vlc,
+      #${STREAM_PANEL_ID} .dlp-stream-live,
+      #${STREAM_PANEL_ID} .dlp-stream-close,
+      #${STREAM_PANEL_ID} .dlp-stream-refresh {
+        height: 30px;
+        border: 1px solid color-mix(in srgb, var(--dlp-border) 88%, transparent);
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--dlp-surface) 86%, var(--dlp-bg));
+        color: var(--dlp-text-primary);
+        font: 700 11px Arial, sans-serif;
+        cursor: pointer;
+        transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-copy {
+        width: 52px;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-vlc {
+        width: 46px;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-live {
+        width: 46px;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-close,
+      #${STREAM_PANEL_ID} .dlp-stream-refresh {
+        width: 34px;
+      }
+
+      #${STREAM_PANEL_ID} button:hover {
+        border-color: var(--dlp-accent-interactive);
+        background: color-mix(in srgb, var(--dlp-accent-interactive) 12%, var(--dlp-surface));
+        color: var(--dlp-accent-interactive);
+      }
+
+      #${STREAM_PANEL_ID} button:disabled {
+        opacity: 0.48;
+        cursor: default;
+      }
+
+      #${STREAM_PANEL_ID} button:focus-visible {
+        outline: 2px solid color-mix(in srgb, var(--dlp-accent-interactive) 72%, transparent);
+        outline-offset: 2px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #${STREAM_PANEL_ID},
+        #${STREAM_PANEL_ID} button {
+          transition: none;
+        }
+      }
+
       #${TOAST_ID} {
         position: fixed;
         right: 18px;
@@ -1189,7 +1632,7 @@
   }
 
   function resetButtonStatus(button) {
-    setButtonStatus(button, "idle", "DLP");
+    setButtonStatus(button, "idle", settings.streamOverlay ? "STR" : "DLP");
     button.disabled = false;
     syncAutoHideAfterPlacement(button);
   }
@@ -1227,6 +1670,7 @@
         && button
         && !button.disabled
         && !button.matches(":hover")
+        && !document.getElementById(STREAM_PANEL_ID)
     );
   }
 
@@ -1260,6 +1704,12 @@
   }
 
   function syncAutoHideAfterPlacement(button) {
+    const panel = document.getElementById(STREAM_PANEL_ID);
+
+    if (panel) {
+      placeStreamPanel(panel, button);
+    }
+
     if (!settings.autoHideOverlay) {
       window.clearTimeout(hideTimer);
       button.classList.remove("dlp-overlay-hidden");
@@ -1342,13 +1792,463 @@
     }, false, Boolean(settings.deepScanner));
   }
 
+  function isStreamCandidate(candidate) {
+    return Boolean(candidate?.url && [
+      "hls",
+      "dash",
+      "direct-mp4",
+      "direct-webm",
+      "direct-video",
+      "direct-audio"
+    ].includes(candidate.type));
+  }
+
+  function getStreamLabel(candidate) {
+    if (candidate.type === "hls") {
+      return "M3U8";
+    }
+
+    if (candidate.type === "dash") {
+      return "MPD";
+    }
+
+    if (candidate.type === "direct-audio") {
+      return "Audio";
+    }
+
+    return (getMediaExtension(candidate.url) || "File").toUpperCase();
+  }
+
+  function copyText(text, callback) {
+    const fallback = () => {
+      const input = document.createElement("textarea");
+      input.value = text;
+      input.style.position = "fixed";
+      input.style.left = "-9999px";
+      document.body.appendChild(input);
+      input.select();
+
+      let copied = false;
+
+      try {
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      }
+
+      input.remove();
+      callback(copied);
+    };
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => callback(true),
+        fallback
+      );
+      return;
+    }
+
+    fallback();
+  }
+
+  function buildVlcPlaylist(candidate) {
+    const referrer = candidate.pageUrl || location.href;
+    const userAgent = candidate.userAgent || navigator.userAgent || "";
+
+    return [
+      "#EXTM3U",
+      `#EXTINF:-1,${getMediaTitle() || getStreamLabel(candidate)}`,
+      referrer ? `#EXTVLCOPT:http-referrer=${referrer}` : "",
+      userAgent ? `#EXTVLCOPT:http-user-agent=${userAgent}` : "",
+      "#EXTVLCOPT:http-reconnect=true",
+      candidate.url
+    ].filter(Boolean).join("\n");
+  }
+
+  function getStreamPlaylistFileName(candidate) {
+    const label = getMediaTitle() || getStreamLabel(candidate) || "stream";
+    const safeLabel = label
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+
+    return `${safeLabel || "dlp-stream"}.m3u8`;
+  }
+
+  function downloadTextFile(text, fileName) {
+    const blob = new Blob([text], { type: "application/vnd.apple.mpegurl;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = fileName;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+
+    window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+      link.remove();
+    }, 1000);
+  }
+
+  function buildStreamPlaylist(candidate, callback) {
+    if (!hasRuntime()) {
+      callback({
+        ok: true,
+        playlist: buildVlcPlaylist(candidate)
+      });
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "dlp-build-stream-playlist",
+          candidate
+        },
+        (response) => {
+          if (chrome.runtime.lastError || !response?.ok || !response.playlist) {
+            callback({
+              ok: false,
+              message: response?.message || chrome.runtime.lastError?.message || "Could not build playlist"
+            });
+            return;
+          }
+
+          callback(response);
+        }
+      );
+    } catch (error) {
+      callback({
+        ok: false,
+        message: error?.message || "Could not build playlist"
+      });
+    }
+  }
+
+  function openLiveStream(candidate, callback) {
+    if (!hasRuntime()) {
+      callback({
+        ok: false,
+        message: "Reload the DLP extension"
+      });
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "dlp-open-stream",
+          candidate,
+          title: getMediaTitle()
+        },
+        (response) => {
+          if (chrome.runtime.lastError || !response?.ok) {
+            callback({
+              ok: false,
+              message: response?.message || chrome.runtime.lastError?.message || "Could not open live stream"
+            });
+            return;
+          }
+
+          callback(response);
+        }
+      );
+    } catch (error) {
+      callback({
+        ok: false,
+        message: error?.message || "Could not open live stream"
+      });
+    }
+  }
+
+  function markCopyButton(button, copied, fallbackText) {
+    button.textContent = copied ? "OK" : "Fail";
+
+    window.setTimeout(() => {
+      button.textContent = fallbackText;
+    }, 1200);
+  }
+
+  function getStreamCandidates(callback) {
+    const localCandidates = getExperimentalCandidates(true).filter(isStreamCandidate);
+
+    if (!hasRuntime()) {
+      callback(localCandidates);
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "dlp-get-stream-candidates",
+          candidates: localCandidates
+        },
+        (response) => {
+          if (chrome.runtime.lastError || !response?.ok) {
+            callback(localCandidates);
+            return;
+          }
+
+          callback(Array.isArray(response.candidates)
+            ? response.candidates.filter(isStreamCandidate)
+            : localCandidates);
+        }
+      );
+    } catch {
+      callback(localCandidates);
+    }
+  }
+
+  function clearStreamPanelAutoHide() {
+    window.clearTimeout(streamPanelHideTimer);
+    streamPanelHideTimer = null;
+  }
+
+  function hideStreamPanel(panel, button) {
+    if (!panel || !document.body.contains(panel)) {
+      return;
+    }
+
+    panel.classList.add("dlp-stream-panel-hidden");
+
+    window.setTimeout(() => {
+      if (panel.classList.contains("dlp-stream-panel-hidden")) {
+        panel.remove();
+        scheduleAutoHide(button);
+      }
+    }, 170);
+  }
+
+  function scheduleStreamPanelAutoHide(panel, button) {
+    clearStreamPanelAutoHide();
+
+    if (!settings.autoHideOverlay || !panel || !document.body.contains(panel)) {
+      return;
+    }
+
+    streamPanelHideTimer = window.setTimeout(() => {
+      if (!document.body.contains(panel)) {
+        return;
+      }
+
+      if (panel.matches(":hover") || panel.contains(document.activeElement)) {
+        scheduleStreamPanelAutoHide(panel, button);
+        return;
+      }
+
+      hideStreamPanel(panel, button);
+    }, STREAM_PANEL_HIDE_DELAY_MS);
+  }
+
+  function removeStreamPanel() {
+    clearStreamPanelAutoHide();
+    document.getElementById(STREAM_PANEL_ID)?.remove();
+  }
+
+  function placeStreamPanel(panel, button) {
+    const rect = button.getBoundingClientRect();
+    const width = Math.min(520, window.innerWidth - 20);
+    const maxHeight = Math.min(340, window.innerHeight - 40);
+    const left = clamp(rect.left, 12, Math.max(12, window.innerWidth - width - 12));
+    let top = rect.bottom + 8;
+
+    if (top + maxHeight > window.innerHeight - 12) {
+      top = Math.max(12, rect.top - maxHeight - 8);
+    }
+
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+  }
+
+  function renderStreamRows(panel, candidates) {
+    const list = panel.querySelector(".dlp-stream-list");
+    list.replaceChildren();
+
+    if (!candidates.length) {
+      const empty = document.createElement("div");
+      empty.className = "dlp-stream-empty";
+      empty.textContent = "No streams found. Play the video, then refresh.";
+      list.appendChild(empty);
+      return;
+    }
+
+    for (const candidate of candidates.slice(0, 12)) {
+      const row = document.createElement("div");
+      row.className = "dlp-stream-row";
+
+      const type = document.createElement("span");
+      type.className = "dlp-stream-type";
+      type.textContent = getStreamLabel(candidate);
+
+      const url = document.createElement("span");
+      url.className = "dlp-stream-url";
+      url.title = candidate.url;
+      url.textContent = candidate.url;
+
+      const copy = document.createElement("button");
+      copy.className = "dlp-stream-copy";
+      copy.type = "button";
+      copy.textContent = "Copy";
+      copy.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        copyText(candidate.url, (copied) => {
+          markCopyButton(copy, copied, "Copy");
+        });
+      });
+
+      const vlc = document.createElement("button");
+      vlc.className = "dlp-stream-vlc";
+      vlc.type = "button";
+      vlc.title = "Download VLC playlist";
+      vlc.textContent = "M3U";
+      vlc.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        vlc.disabled = true;
+        vlc.textContent = "...";
+
+        buildStreamPlaylist(candidate, (response) => {
+          vlc.disabled = false;
+
+          if (!response.ok) {
+            showToast(response.message || "Playlist failed", "error");
+            markCopyButton(vlc, false, "M3U");
+            return;
+          }
+
+          downloadTextFile(response.playlist, getStreamPlaylistFileName(candidate));
+          showToast(response.transformed ? "VLC playlist fixed" : "VLC playlist ready", "success");
+          markCopyButton(vlc, true, "M3U");
+        });
+      });
+
+      const live = document.createElement("button");
+      live.className = "dlp-stream-live";
+      live.type = "button";
+      live.title = "Open live stream in VLC";
+      live.textContent = "Live";
+      live.disabled = candidate.type !== "hls";
+      live.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        live.disabled = true;
+        live.textContent = "...";
+
+        openLiveStream(candidate, (response) => {
+          live.disabled = candidate.type !== "hls";
+
+          if (!response.ok) {
+            showToast(response.message || "Live stream failed", "error");
+            markCopyButton(live, false, "Live");
+            return;
+          }
+
+          showToast("Opening VLC live stream", "success");
+          markCopyButton(live, true, "Live");
+        });
+      });
+
+      row.append(type, url, copy, vlc, live);
+      list.appendChild(row);
+    }
+  }
+
+  function refreshStreamPanel(panel, button) {
+    const list = panel.querySelector(".dlp-stream-list");
+    list.replaceChildren();
+
+    const loading = document.createElement("div");
+    loading.className = "dlp-stream-empty";
+    loading.textContent = "Scanning streams";
+    list.appendChild(loading);
+
+    getStreamCandidates((candidates) => {
+      if (!document.body.contains(panel)) {
+        return;
+      }
+
+      renderStreamRows(panel, candidates);
+      placeStreamPanel(panel, button);
+      scheduleStreamPanelAutoHide(panel, button);
+    });
+  }
+
+  function toggleStreamPanel(button) {
+    const existing = document.getElementById(STREAM_PANEL_ID);
+
+    if (existing) {
+      existing.remove();
+      return;
+    }
+
+    const panel = document.createElement("div");
+    panel.id = STREAM_PANEL_ID;
+    panel.addEventListener("mousedown", (event) => event.stopPropagation());
+    panel.addEventListener("click", (event) => event.stopPropagation());
+    panel.addEventListener("mouseenter", clearStreamPanelAutoHide);
+    panel.addEventListener("focusin", clearStreamPanelAutoHide);
+    panel.addEventListener("mouseleave", () => {
+      scheduleStreamPanelAutoHide(panel, button);
+    });
+    panel.addEventListener("focusout", () => {
+      window.setTimeout(() => scheduleStreamPanelAutoHide(panel, button), 0);
+    });
+
+    const head = document.createElement("div");
+    head.className = "dlp-stream-head";
+
+    const title = document.createElement("span");
+    title.textContent = "Streams";
+
+    const refresh = document.createElement("button");
+    refresh.className = "dlp-stream-refresh";
+    refresh.type = "button";
+    refresh.title = "Refresh streams";
+    refresh.textContent = "R";
+
+    const close = document.createElement("button");
+    close.className = "dlp-stream-close";
+    close.type = "button";
+    close.title = "Close";
+    close.textContent = "X";
+
+    const list = document.createElement("div");
+    list.className = "dlp-stream-list";
+
+    refresh.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      refreshStreamPanel(panel, button);
+    });
+
+    close.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removeStreamPanel();
+      scheduleAutoHide(button);
+    });
+
+    head.append(title, refresh, close);
+    panel.append(head, list);
+    document.body.appendChild(panel);
+    placeStreamPanel(panel, button);
+    scheduleStreamPanelAutoHide(panel, button);
+    refreshStreamPanel(panel, button);
+  }
+
   function createButton() {
     const button = document.createElement("button");
     button.id = BUTTON_ID;
     button.type = "button";
-    button.title = "Download with DLP";
-    button.setAttribute("aria-label", "Download with DLP");
-    setButtonStatus(button, "idle", "DLP");
+    button.title = settings.streamOverlay ? "Show stream links" : "Download with DLP";
+    button.setAttribute("aria-label", settings.streamOverlay ? "Show stream links" : "Download with DLP");
+    setButtonStatus(button, "idle", settings.streamOverlay ? "STR" : "DLP");
 
     button.addEventListener("mouseenter", () => {
       showButtonForInteraction(button);
@@ -1366,6 +2266,12 @@
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+
+      if (settings.streamOverlay) {
+        toggleStreamPanel(button);
+        return;
+      }
+
       sendDownload(button);
     });
 
@@ -1378,6 +2284,8 @@
     if (existing) {
       existing.remove();
     }
+
+    removeStreamPanel();
   }
 
   function isFixedOverlayPlatform(platform) {
@@ -1575,6 +2483,13 @@
       button = createButton();
     }
 
+    button.title = settings.streamOverlay ? "Show stream links" : "Download with DLP";
+    button.setAttribute("aria-label", settings.streamOverlay ? "Show stream links" : "Download with DLP");
+
+    if (button.dataset.dlpStatus === "idle") {
+      setButtonText(button, settings.streamOverlay ? "STR" : "DLP");
+    }
+
     const overlayPosition = getOverlayPosition();
 
     if (overlayPosition !== "auto") {
@@ -1682,8 +2597,11 @@
     });
   }
 
+  installPageStreamHook();
+  watchPageStreamMessages();
+
   observer = new MutationObserver(scheduleRefresh);
-  observer.observe(document.documentElement, {
+  observer.observe(document.documentElement || document, {
     childList: true,
     subtree: true
   });

@@ -35,9 +35,23 @@ internal static class Program
         string? userAgent = NormalizeHeaderValue(ReadOption(args, "--user-agent"), 512);
         string? cookieBrowser = NormalizeCookieBrowser(ReadOption(args, "--browser-cookies"));
         string? openDownload = ReadOption(args, "--open-download");
+        string? requestedStreamUrl = ReadOption(args, "--stream-url");
         bool silent = HasSwitch(args, "--silent");
         bool openApp = HasSwitch(args, "--open-app");
         bool openDownloads = HasSwitch(args, "--open-downloads");
+
+        if (!string.IsNullOrWhiteSpace(requestedStreamUrl))
+        {
+            string? streamUrl = NormalizeOptionalHttpsUrl(requestedStreamUrl);
+
+            if (streamUrl is null)
+            {
+                Log($"Rejected live stream URL: {requestedStreamUrl}");
+                return 1;
+            }
+
+            return LiveHlsProxy.RunVlcAsync(streamUrl, title, referer, userAgent).GetAwaiter().GetResult();
+        }
 
         if (!string.IsNullOrWhiteSpace(openDownload))
         {
@@ -547,6 +561,7 @@ internal static class NativeMessagingHost
             "open_folder" => HandleOpenFolder(),
             "list_downloads" => HandleListDownloads(),
             "open_download" => HandleOpenDownload(root),
+            "open_stream" => HandleOpenStream(root),
             "download" => HandleDownload(root),
             _ => throw new NativeHostException("unsupported_action", "Unsupported native host action")
         };
@@ -635,6 +650,66 @@ internal static class NativeMessagingHost
             launched = true,
             silent,
             experimental
+        };
+    }
+
+    private static object HandleOpenStream(JsonElement root)
+    {
+        string requestedUrl = ReadString(root, "url", required: true)!;
+        string? title = ReadString(root, "title", required: false);
+        string? referer = Program.NormalizeOptionalHttpsUrl(FirstNonWhiteSpace(
+            ReadString(root, "pageUrl", required: false),
+            ReadString(root, "referer", required: false)));
+        string? userAgent = Program.NormalizeHeaderValue(ReadString(root, "userAgent", required: false), 512);
+        bool experimental = ReadBoolean(root, "experimental", defaultValue: true);
+        string normalizedUrl = ValidateAndNormalizeUrl(requestedUrl, experimental);
+        string appPath = ResolveCurrentAppPath();
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = appPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(appPath) ?? AppContext.BaseDirectory
+        };
+
+        startInfo.ArgumentList.Add("--source");
+        startInfo.ArgumentList.Add("browser-stream");
+        startInfo.ArgumentList.Add("--stream-url");
+        startInfo.ArgumentList.Add(normalizedUrl);
+
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            startInfo.ArgumentList.Add("--title");
+            startInfo.ArgumentList.Add(title.Trim());
+        }
+
+        if (referer is not null)
+        {
+            startInfo.ArgumentList.Add("--referer");
+            startInfo.ArgumentList.Add(referer);
+        }
+
+        if (userAgent is not null)
+        {
+            startInfo.ArgumentList.Add("--user-agent");
+            startInfo.ArgumentList.Add(userAgent);
+        }
+
+        using Process? process = Process.Start(startInfo);
+
+        if (process is null)
+        {
+            throw new NativeHostException("launch_failed", "DLP could not open the live stream");
+        }
+
+        Log($"Opened live stream proxy for URL: {normalizedUrl}");
+
+        return new
+        {
+            ok = true,
+            action = "open_stream",
+            launched = true
         };
     }
 
