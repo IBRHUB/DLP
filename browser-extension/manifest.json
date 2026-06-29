@@ -9,7 +9,8 @@
     "contextMenus",
     "nativeMessaging",
     "storage",
-    "tabs"
+    "tabs",
+    "webRequest"
   ],
   "host_permissions": [
     "*://youtube.com/*",

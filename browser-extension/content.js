@@ -6,6 +6,8 @@
   const BUTTON_HEIGHT = 24;
   const BUTTON_OFFSET = 12;
   const AUTO_HIDE_DELAY_MS = 2600;
+  const MEDIA_URL_RE = /\.(m3u8|mpd|mp4|webm|m4v|mov)(?:[?#]|$)/i;
+  const STREAM_URL_RE = /(?:playlist|manifest|master|index)\.(?:m3u8|mpd)(?:[?#]|$)/i;
   const DEFAULT_SETTINGS = {
     silentDownload: false,
     autoHideOverlay: true,
@@ -584,29 +586,131 @@
   }
 
   function getExperimentalVideoUrl() {
+    return getExperimentalCandidates()[0]?.url || null;
+  }
+
+  function getExperimentalCandidates() {
+    const candidates = [];
     const video = getVisibleVideo();
 
-    if (!video) {
-      return null;
+    if (video) {
+      candidates.push(
+        createExperimentalCandidate(video.currentSrc, "video.currentSrc"),
+        createExperimentalCandidate(video.src, "video.src"),
+        ...Array.from(video.querySelectorAll("source[src]"), (source) =>
+          createExperimentalCandidate(source.src, "source.src"))
+      );
     }
 
-    const candidate = video.currentSrc || video.src || video.querySelector("source[src]")?.src;
+    candidates.push(
+      createExperimentalCandidate(getMetaContent('meta[property="og:video:secure_url"]'), "meta.og:video:secure_url"),
+      createExperimentalCandidate(getMetaContent('meta[property="og:video:url"]'), "meta.og:video:url"),
+      createExperimentalCandidate(getMetaContent('meta[property="og:video"]'), "meta.og:video"),
+      createExperimentalCandidate(getMetaContent('meta[name="twitter:player:stream"]'), "meta.twitter:player:stream")
+    );
 
-    if (!candidate) {
+    for (const entry of performance.getEntriesByType("resource")) {
+      if (isLikelyMediaUrl(entry.name)) {
+        candidates.push(createExperimentalCandidate(entry.name, "performance"));
+      }
+    }
+
+    return rankExperimentalCandidates(candidates.filter(Boolean));
+  }
+
+  function createExperimentalCandidate(rawUrl, source) {
+    if (!rawUrl) {
       return null;
     }
 
     try {
-      const parsed = new URL(candidate, location.href);
+      const parsed = new URL(rawUrl, location.href);
 
       if (parsed.protocol !== "https:") {
         return null;
       }
 
-      return parsed.href;
+      return {
+        url: parsed.href,
+        type: getCandidateType(parsed.href),
+        source,
+        time: Date.now()
+      };
     } catch {
       return null;
     }
+  }
+
+  function getCandidateType(url) {
+    if (/\.m3u8(?:[?#]|$)/i.test(url)) {
+      return "hls";
+    }
+
+    if (/\.mpd(?:[?#]|$)/i.test(url)) {
+      return "dash";
+    }
+
+    if (/\.mp4(?:[?#]|$)/i.test(url)) {
+      return "direct-mp4";
+    }
+
+    if (/\.webm(?:[?#]|$)/i.test(url)) {
+      return "direct-webm";
+    }
+
+    if (/\.(m4v|mov)(?:[?#]|$)/i.test(url)) {
+      return "direct-video";
+    }
+
+    return "html5-video";
+  }
+
+  function isLikelyMediaUrl(url) {
+    return MEDIA_URL_RE.test(url) || STREAM_URL_RE.test(url);
+  }
+
+  function experimentalCandidateScore(candidate) {
+    let score = 0;
+
+    if (candidate.type === "hls") {
+      score += 120;
+    } else if (candidate.type === "dash") {
+      score += 115;
+    } else if (candidate.type === "direct-mp4") {
+      score += 95;
+    } else if (candidate.type === "direct-webm" || candidate.type === "direct-video") {
+      score += 90;
+    } else {
+      score += 60;
+    }
+
+    if (candidate.source === "video.currentSrc") {
+      score += 12;
+    } else if (candidate.source === "video.src" || candidate.source === "source.src") {
+      score += 8;
+    } else if (candidate.source === "performance") {
+      score += 6;
+    } else if (String(candidate.source).startsWith("meta.")) {
+      score += 3;
+    }
+
+    return score;
+  }
+
+  function rankExperimentalCandidates(candidates) {
+    const seen = new Set();
+
+    return candidates
+      .filter((candidate) => {
+        if (!candidate?.url || seen.has(candidate.url)) {
+          return false;
+        }
+
+        seen.add(candidate.url);
+        return true;
+      })
+      .sort((first, second) => experimentalCandidateScore(second) - experimentalCandidateScore(first))
+      .slice(0, 20);
   }
 
   function getVisibleVideo() {
@@ -1032,7 +1136,11 @@
         {
           type: "dlp-download-current-video",
           url: getDownloadUrl(),
-          title: getMediaTitle()
+          title: getMediaTitle(),
+          pageUrl: location.href,
+          candidates: !getPlatform() && settings.experimentalAllSites
+            ? getExperimentalCandidates()
+            : []
         },
         (response) => {
           if (!hasRuntime()) {
@@ -1374,6 +1482,28 @@
     document.addEventListener("yt-navigate-finish", scheduleRefresh);
   }
 
+  function watchExtensionMessages() {
+    if (!hasRuntime() || !chrome.runtime.onMessage) {
+      return;
+    }
+
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (!message || message.type !== "dlp-scan-candidates") {
+        return false;
+      }
+
+      const experimental = Boolean(settings.experimentalAllSites || message.experimentalAllSites);
+
+      sendResponse({
+        url: getDownloadUrl(),
+        title: getMediaTitle(),
+        candidates: !getPlatform() && experimental ? getExperimentalCandidates() : []
+      });
+
+      return false;
+    });
+  }
+
   observer = new MutationObserver(scheduleRefresh);
   observer.observe(document.documentElement, {
     childList: true,
@@ -1386,6 +1516,7 @@
   window.addEventListener("scroll", handlePageActivity, true);
 
   watchSettingsChanges();
+  watchExtensionMessages();
   watchUrlChanges();
   loadSettings(scheduleRefresh);
 })();

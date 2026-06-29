@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Drawing.Drawing2D;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -1319,12 +1320,244 @@ internal static class DlpTheme
     public static readonly Color BorderStrong = Color.FromArgb(73, 97, 120);
     public static readonly Color Accent = Color.FromArgb(88, 166, 255);
     public static readonly Color AccentActive = Color.FromArgb(47, 129, 247);
+    public static readonly Color AccentInteractive = Color.FromArgb(88, 166, 255);
     public static readonly Color DisabledText = Color.FromArgb(111, 126, 143);
+}
+
+internal static class DlpDrawing
+{
+    public static GraphicsPath CreateRoundedRectangle(Rectangle bounds, int radius)
+    {
+        GraphicsPath path = new();
+        int diameter = radius * 2;
+        Rectangle arc = new(bounds.Location, new Size(diameter, diameter));
+
+        path.AddArc(arc, 180, 90);
+        arc.X = bounds.Right - diameter;
+        path.AddArc(arc, 270, 90);
+        arc.Y = bounds.Bottom - diameter;
+        path.AddArc(arc, 0, 90);
+        arc.X = bounds.Left;
+        path.AddArc(arc, 90, 90);
+        path.CloseFigure();
+
+        return path;
+    }
+}
+
+internal sealed class DlpSwitchControl : Control
+{
+    public event EventHandler? CheckedChanged;
+
+    private bool _checked;
+    private bool _hover;
+
+    public bool Checked
+    {
+        get => _checked;
+        set
+        {
+            if (_checked == value)
+            {
+                return;
+            }
+
+            _checked = value;
+            Invalidate();
+            CheckedChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    public DlpSwitchControl()
+    {
+        Size = new Size(44, 24);
+        Cursor = Cursors.Hand;
+        TabStop = true;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
+    }
+
+    protected override void OnClick(EventArgs e)
+    {
+        if (Enabled)
+        {
+            Checked = !Checked;
+        }
+
+        base.OnClick(e);
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        _hover = true;
+        Invalidate();
+        base.OnMouseEnter(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        _hover = false;
+        Invalidate();
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        Invalidate();
+        base.OnEnabledChanged(e);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics graphics = e.Graphics;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+        Rectangle trackBounds = new(0, 0, Width - 1, Height - 1);
+        Color trackColor = !Enabled
+            ? DlpTheme.Border
+            : _checked
+                ? DlpTheme.AccentActive
+                : _hover
+                    ? DlpTheme.BorderStrong
+                    : DlpTheme.BorderStrong;
+
+        using (GraphicsPath trackPath = DlpDrawing.CreateRoundedRectangle(trackBounds, 12))
+        using (SolidBrush trackBrush = new(trackColor))
+        {
+            graphics.FillPath(trackBrush, trackPath);
+        }
+
+        int thumbX = _checked ? 23 : 3;
+        Rectangle thumbBounds = new(thumbX, 3, 18, 18);
+        Color thumbColor = Enabled ? DlpTheme.TextPrimary : DlpTheme.DisabledText;
+
+        using (SolidBrush thumbBrush = new(thumbColor))
+        {
+            graphics.FillEllipse(thumbBrush, thumbBounds);
+        }
+    }
+}
+
+internal sealed class DlpComboBox : ComboBox
+{
+    private const int WmPaint = 0x000F;
+    private const int WmNcPaint = 0x0085;
+
+    public DlpComboBox()
+    {
+        SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+
+        if (m.Msg is WmPaint or WmNcPaint)
+        {
+            PaintChrome();
+        }
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        base.OnEnabledChanged(e);
+        Invalidate();
+    }
+
+    private void PaintChrome()
+    {
+        if (!IsHandleCreated || Width <= 0 || Height <= 0)
+        {
+            return;
+        }
+
+        using Graphics graphics = Graphics.FromHwnd(Handle);
+        Color surface = Enabled ? DlpTheme.Surface : DlpTheme.Bg;
+        Color border = Focused && Enabled ? DlpTheme.AccentInteractive : DlpTheme.Border;
+        Rectangle bounds = new(0, 0, Width - 1, Height - 1);
+        Rectangle arrowBounds = new(Math.Max(0, Width - 24), 1, 23, Height - 2);
+
+        using SolidBrush surfaceBrush = new(surface);
+        using Pen borderPen = new(border);
+        graphics.FillRectangle(surfaceBrush, arrowBounds);
+        graphics.DrawRectangle(borderPen, bounds);
+
+        int centerX = arrowBounds.Left + (arrowBounds.Width / 2);
+        int centerY = arrowBounds.Top + (arrowBounds.Height / 2);
+        Point[] chevron =
+        [
+            new(centerX - 4, centerY - 2),
+            new(centerX, centerY + 2),
+            new(centerX + 4, centerY - 2)
+        ];
+
+        using Pen chevronPen = new(Enabled ? DlpTheme.TextPrimary : DlpTheme.DisabledText, 1.6F);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.DrawLines(chevronPen, chevron);
+    }
+}
+
+internal readonly record struct YtDlpDownloadOptions(bool EmbedSubs, bool UseCookies, string Browser);
+
+internal static class YtDlpArgumentBuilder
+{
+    public static void AddVideoArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options)
+    {
+        startInfo.ArgumentList.Add("-f");
+        startInfo.ArgumentList.Add("bv*+ba/b");
+        startInfo.ArgumentList.Add("--merge-output-format");
+        startInfo.ArgumentList.Add(options.EmbedSubs ? "mkv" : "mp4");
+
+        if (options.EmbedSubs)
+        {
+            startInfo.ArgumentList.Add("--all-subs");
+            startInfo.ArgumentList.Add("--embed-subs");
+        }
+
+        AddCookieArguments(startInfo, options);
+    }
+
+    public static void AddAudioArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options)
+    {
+        startInfo.ArgumentList.Add("-f");
+        startInfo.ArgumentList.Add("bestaudio/best");
+        startInfo.ArgumentList.Add("-x");
+        startInfo.ArgumentList.Add("--audio-format");
+        startInfo.ArgumentList.Add("mp3");
+        startInfo.ArgumentList.Add("--audio-quality");
+        startInfo.ArgumentList.Add("0");
+
+        AddCookieArguments(startInfo, options);
+    }
+
+    private static void AddCookieArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options)
+    {
+        if (!options.UseCookies || string.IsNullOrWhiteSpace(options.Browser))
+        {
+            return;
+        }
+
+        startInfo.ArgumentList.Add("--cookies-from-browser");
+        startInfo.ArgumentList.Add(options.Browser.Trim());
+    }
 }
 
 internal sealed class DownloadForm : Form
 {
     private static readonly Regex ProgressRegex = new(@"(?<percent>\d{1,3}(?:\.\d+)?)%", RegexOptions.Compiled);
+    private static readonly string[] CookieBrowsers = ["chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium"];
 
     private readonly string _url;
     private readonly string _source;
@@ -1339,6 +1572,10 @@ internal sealed class DownloadForm : Form
     private readonly Button _audioButton = new();
     private readonly Button _openFolderButton = new();
     private readonly Button _updateButton = new();
+    private readonly DlpSwitchControl _embedSubsSwitch = new();
+    private readonly DlpSwitchControl _cookiesSwitch = new();
+    private readonly DlpComboBox _browserSelect = new();
+    private Label _browserSettingLabel = new();
 
     private Process? _downloadProcess;
     private bool _isPreparingDownload;
@@ -1360,6 +1597,7 @@ internal sealed class DownloadForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        _browserSelect.DroppedDown = false;
         CancelDownload();
         base.OnFormClosing(e);
     }
@@ -1385,8 +1623,8 @@ internal sealed class DownloadForm : Form
         MaximizeBox = false;
         MinimizeBox = true;
         Width = 500;
-        Height = 430;
-        MinimumSize = new Size(500, 430);
+        Height = 570;
+        MinimumSize = new Size(500, 570);
         BackColor = DlpTheme.Bg;
         Font = new Font("Segoe UI", 10F);
 
@@ -1395,10 +1633,11 @@ internal sealed class DownloadForm : Form
             Dock = DockStyle.Fill,
             BackColor = DlpTheme.Bg,
             Padding = new Padding(24, 22, 24, 18),
-            RowCount = 7,
+            RowCount = 8,
             ColumnCount = 1
         };
 
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1443,6 +1682,8 @@ internal sealed class DownloadForm : Form
 
         urlPanel.Controls.Add(urlCaption);
         urlPanel.Controls.Add(urlBox);
+
+        TableLayoutPanel optionsPanel = BuildOptionsPanel();
 
         Label downloadCaption = new()
         {
@@ -1587,6 +1828,7 @@ internal sealed class DownloadForm : Form
         footerShell.Controls.Add(footer, 0, 1);
 
         root.Controls.Add(urlPanel);
+        root.Controls.Add(optionsPanel);
         root.Controls.Add(downloadCaption);
         root.Controls.Add(actions);
         root.Controls.Add(folderPanel);
@@ -1595,6 +1837,175 @@ internal sealed class DownloadForm : Form
         root.Controls.Add(footerShell);
 
         Controls.Add(root);
+    }
+
+    private TableLayoutPanel BuildOptionsPanel()
+    {
+        TableLayoutPanel panel = new()
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            BackColor = DlpTheme.Bg,
+            ColumnCount = 1,
+            RowCount = 4,
+            Margin = new Padding(0, 0, 0, 14)
+        };
+
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        Label optionsCaption = new()
+        {
+            Text = "Options",
+            AutoSize = true,
+            Font = new Font(Font.FontFamily, 9F, FontStyle.Bold),
+            ForeColor = DlpTheme.TextPrimary,
+            Margin = new Padding(0, 0, 0, 8)
+        };
+
+        _cookiesSwitch.CheckedChanged += (_, _) => UpdateBrowserComboEnabled();
+        ConfigureBrowserSelect();
+
+        TableLayoutPanel embedRow = CreateSettingRow("Embed subtitles", _embedSubsSwitch);
+        TableLayoutPanel cookiesRow = CreateSettingRow("Browser cookies", _cookiesSwitch);
+        TableLayoutPanel browserRow = CreateSettingRow("Browser", _browserSelect, out _browserSettingLabel);
+
+        panel.Controls.Add(optionsCaption, 0, 0);
+        panel.Controls.Add(embedRow, 0, 1);
+        panel.Controls.Add(cookiesRow, 0, 2);
+        panel.Controls.Add(browserRow, 0, 3);
+
+        UpdateBrowserComboEnabled();
+
+        return panel;
+    }
+
+    private TableLayoutPanel CreateSettingRow(string title, Control control)
+    {
+        return CreateSettingRow(title, control, out _);
+    }
+
+    private TableLayoutPanel CreateSettingRow(string title, Control control, out Label titleLabel)
+    {
+        TableLayoutPanel row = new()
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            BackColor = DlpTheme.Bg,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0, 0, 0, 10),
+            MinimumSize = new Size(0, 34)
+        };
+
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
+
+        titleLabel = new Label
+        {
+            Text = title,
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            ForeColor = DlpTheme.TextPrimary,
+            Font = new Font(Font.FontFamily, 10F, FontStyle.Regular),
+            Margin = new Padding(0, 7, 12, 0)
+        };
+
+        control.Dock = control is ComboBox ? DockStyle.Top : DockStyle.Fill;
+        control.Margin = new Padding(0, 1, 0, 1);
+        control.Anchor = AnchorStyles.Right;
+
+        row.Controls.Add(titleLabel, 0, 0);
+        row.Controls.Add(control, 1, 0);
+
+        return row;
+    }
+
+    private YtDlpDownloadOptions GetYtDlpOptions() => new(
+        _embedSubsSwitch.Checked,
+        _cookiesSwitch.Checked,
+        (_browserSelect.SelectedItem?.ToString() ?? "chrome").ToLowerInvariant());
+
+    private void UpdateBrowserComboEnabled()
+    {
+        bool allowBrowser = _cookiesSwitch.Enabled && _cookiesSwitch.Checked;
+
+        if (!allowBrowser)
+        {
+            _browserSelect.DroppedDown = false;
+        }
+
+        _browserSelect.Enabled = allowBrowser;
+        _browserSelect.BackColor = allowBrowser ? DlpTheme.Surface : DlpTheme.Bg;
+        _browserSelect.ForeColor = allowBrowser ? DlpTheme.TextPrimary : DlpTheme.DisabledText;
+        _browserSettingLabel.ForeColor = allowBrowser ? DlpTheme.TextPrimary : DlpTheme.TextSecondary;
+        _browserSelect.Invalidate();
+    }
+
+    private void SetOptionControlsEnabled(bool enabled)
+    {
+        _embedSubsSwitch.Enabled = enabled;
+        _cookiesSwitch.Enabled = enabled;
+        UpdateBrowserComboEnabled();
+    }
+
+    private void ConfigureBrowserSelect()
+    {
+        _browserSelect.BeginUpdate();
+        _browserSelect.Items.Clear();
+
+        foreach (string browser in CookieBrowsers)
+        {
+            _browserSelect.Items.Add(FormatBrowserName(browser));
+        }
+
+        _browserSelect.SelectedIndex = 0;
+        _browserSelect.EndUpdate();
+
+        _browserSelect.DropDownStyle = ComboBoxStyle.DropDownList;
+        _browserSelect.FlatStyle = FlatStyle.Flat;
+        _browserSelect.BackColor = DlpTheme.Surface;
+        _browserSelect.ForeColor = DlpTheme.TextPrimary;
+        _browserSelect.Font = new Font(Font.FontFamily, 9.5F);
+        _browserSelect.DrawMode = DrawMode.OwnerDrawFixed;
+        _browserSelect.ItemHeight = 30;
+        _browserSelect.IntegralHeight = false;
+        _browserSelect.MaxDropDownItems = CookieBrowsers.Length;
+        _browserSelect.DropDownHeight = (CookieBrowsers.Length * 30) + 2;
+        _browserSelect.Enabled = false;
+        _browserSelect.DrawItem += DrawBrowserItem;
+        UpdateBrowserComboEnabled();
+    }
+
+    private static string FormatBrowserName(string browser) =>
+        string.IsNullOrWhiteSpace(browser)
+            ? string.Empty
+            : string.Concat(browser[..1].ToUpperInvariant(), browser[1..]);
+
+    private static void DrawBrowserItem(object? sender, DrawItemEventArgs e)
+    {
+        if (sender is not ComboBox comboBox || e.Index < 0 || e.Index >= comboBox.Items.Count)
+        {
+            return;
+        }
+
+        bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+        Color background = selected ? DlpTheme.AccentActive : DlpTheme.Surface;
+        Color foreground = DlpTheme.TextPrimary;
+
+        using SolidBrush backgroundBrush = new(background);
+        e.Graphics.FillRectangle(backgroundBrush, e.Bounds);
+
+        Rectangle textBounds = new(e.Bounds.Left + 10, e.Bounds.Top + 5, e.Bounds.Width - 20, e.Bounds.Height - 8);
+        TextRenderer.DrawText(
+            e.Graphics,
+            comboBox.Items[e.Index]?.ToString() ?? string.Empty,
+            comboBox.Font,
+            textBounds,
+            foreground,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
     }
 
     private Label CreateFooterLabel(string text) => new()
@@ -1709,22 +2120,15 @@ internal sealed class DownloadForm : Form
 
         AddCommonArguments(startInfo, createDuplicateCopy);
 
+        YtDlpDownloadOptions options = GetYtDlpOptions();
+
         if (kind == DownloadKind.Video)
         {
-            startInfo.ArgumentList.Add("-f");
-            startInfo.ArgumentList.Add("bv*+ba/b");
-            startInfo.ArgumentList.Add("--merge-output-format");
-            startInfo.ArgumentList.Add("mp4");
+            YtDlpArgumentBuilder.AddVideoArguments(startInfo, options);
         }
         else
         {
-            startInfo.ArgumentList.Add("-f");
-            startInfo.ArgumentList.Add("bestaudio/best");
-            startInfo.ArgumentList.Add("-x");
-            startInfo.ArgumentList.Add("--audio-format");
-            startInfo.ArgumentList.Add("mp3");
-            startInfo.ArgumentList.Add("--audio-quality");
-            startInfo.ArgumentList.Add("0");
+            YtDlpArgumentBuilder.AddAudioArguments(startInfo, options);
         }
 
         startInfo.ArgumentList.Add(_url);
@@ -1835,6 +2239,7 @@ internal sealed class DownloadForm : Form
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
         _updateButton.Enabled = false;
+        SetOptionControlsEnabled(false);
         _progressBar.Visible = true;
         _progressBar.Value = 0;
         SetStatus(kind == DownloadKind.Video ? "Downloading best video" : "Downloading best audio", 0);
@@ -1846,6 +2251,7 @@ internal sealed class DownloadForm : Form
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
         _updateButton.Enabled = false;
+        SetOptionControlsEnabled(false);
         _progressBar.Visible = false;
         _progressBar.Value = 0;
         SetStatus("Preparing download", 0);
@@ -1862,6 +2268,7 @@ internal sealed class DownloadForm : Form
         _videoButton.Enabled = canRunYtDlp;
         _audioButton.Enabled = canRunYtDlp;
         _updateButton.Enabled = canRunAppTools;
+        SetOptionControlsEnabled(canRunYtDlp);
     }
 
     private async Task UpdateAllAsync()
@@ -1891,6 +2298,7 @@ internal sealed class DownloadForm : Form
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
         _updateButton.Enabled = false;
+        SetOptionControlsEnabled(false);
         _progressBar.Visible = false;
         _progressBar.Value = 0;
         SetStatus("Checking app update", 0);
@@ -1955,6 +2363,7 @@ internal sealed class DownloadForm : Form
         _videoButton.Enabled = false;
         _audioButton.Enabled = false;
         _updateButton.Enabled = false;
+        SetOptionControlsEnabled(false);
         _progressBar.Visible = false;
         SetStatus("Updating yt-dlp", 0);
 
