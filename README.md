@@ -244,9 +244,10 @@ Download folder:
 ## Logs
 
 ```text
-%LOCALAPPDATA%\DLP\logs\app.log
-%LOCALAPPDATA%\DLP\logs\native-host.log
+%LOCALAPPDATA%\Programs\DLP\logs\DLP.log
 ```
+
+`DLP.log` is the single application log. It includes app events, Native Messaging host events, yt-dlp output, direct download fallback events, update checks, duplicate checks, and clear error codes such as `missing_yt_dlp`, `http_forbidden`, `unsupported_media_url`, and `direct_download_failed`
 
 ## Known Security Prompts And Issues
 
@@ -266,6 +267,7 @@ Download folder:
 
 - Microsoft .NET 8: [https://dotnet.microsoft.com/en-us/download/dotnet/8.0](https://dotnet.microsoft.com/en-us/download/dotnet/8.0)
 - yt-dlp: [https://github.com/yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)
+- yt-dlp browser cookies option: `--cookies-from-browser BROWSER[+KEYRING][:PROFILE][::CONTAINER]`
 - FFmpeg: [https://ffmpeg.org/download.html](https://ffmpeg.org/download.html)
 - DLP Releases: [https://github.com/IBRHUB/DLP/releases](https://github.com/IBRHUB/DLP/releases)
 - GitHub Releases API: [https://docs.github.com/en/rest/releases/releases](https://docs.github.com/en/rest/releases/releases)

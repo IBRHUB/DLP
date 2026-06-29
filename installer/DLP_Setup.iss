@@ -46,11 +46,16 @@ Root: HKCU; Subkey: "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\{
 [InstallDelete]
 Type: files; Name: "{userprograms}\DLP.lnk"
 Type: files; Name: "{userdesktop}\DLP.lnk"
+Type: files; Name: "{localappdata}\DLP\logs\app.log"
+Type: files; Name: "{localappdata}\DLP\logs\native-host.log"
+Type: dirifempty; Name: "{localappdata}\DLP\logs"
 
 [UninstallDelete]
 Type: files; Name: "{userprograms}\DLP.lnk"
 Type: files; Name: "{userdesktop}\DLP.lnk"
+Type: files; Name: "{app}\logs\DLP.log"
 Type: files; Name: "{app}\native-host\{#NativeHostManifestName}"
+Type: dirifempty; Name: "{app}\logs"
 Type: dirifempty; Name: "{app}\native-host"
 Type: dirifempty; Name: "{app}\browser-extension"
 Type: dirifempty; Name: "{app}\tools"

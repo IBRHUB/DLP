@@ -2,12 +2,20 @@ const DEFAULT_SETTINGS = {
   silentDownload: false,
   autoHideOverlay: true,
   overlayPosition: "auto",
-  experimentalAllSites: false
+  experimentalAllSites: false,
+  deepScanner: false,
+  browserCookies: false,
+  cookieBrowser: "brave"
 };
 
 const silentDownloadInput = document.getElementById("silentDownload");
 const autoHideOverlayInput = document.getElementById("autoHideOverlay");
 const experimentalAllSitesInput = document.getElementById("experimentalAllSites");
+const deepScannerInput = document.getElementById("deepScanner");
+const deepScannerRow = document.getElementById("deepScannerRow");
+const browserCookiesInput = document.getElementById("browserCookies");
+const cookieBrowserInput = document.getElementById("cookieBrowser");
+const cookieBrowserRow = document.getElementById("cookieBrowserRow");
 const overlayPositionInput = document.getElementById("overlayPosition");
 const statusElement = document.getElementById("status");
 const versionElement = document.getElementById("version");
@@ -27,6 +35,13 @@ function render(settings, statusText = "") {
   silentDownloadInput.checked = Boolean(settings.silentDownload);
   autoHideOverlayInput.checked = Boolean(settings.autoHideOverlay);
   experimentalAllSitesInput.checked = Boolean(settings.experimentalAllSites);
+  deepScannerInput.checked = Boolean(settings.experimentalAllSites && settings.deepScanner);
+  deepScannerInput.disabled = !settings.experimentalAllSites;
+  deepScannerRow.classList.toggle("is-disabled", !settings.experimentalAllSites);
+  browserCookiesInput.checked = Boolean(settings.browserCookies);
+  cookieBrowserInput.disabled = !settings.browserCookies;
+  cookieBrowserRow.classList.toggle("is-disabled", !settings.browserCookies);
+  cookieBrowserInput.value = settings.cookieBrowser || DEFAULT_SETTINGS.cookieBrowser;
   overlayPositionInput.value = settings.overlayPosition || DEFAULT_SETTINGS.overlayPosition;
   setStatus(statusText);
 }
@@ -50,6 +65,18 @@ autoHideOverlayInput.addEventListener("change", () => {
 
 experimentalAllSitesInput.addEventListener("change", () => {
   saveSettings({ experimentalAllSites: experimentalAllSitesInput.checked });
+});
+
+deepScannerInput.addEventListener("change", () => {
+  saveSettings({ deepScanner: deepScannerInput.checked });
+});
+
+browserCookiesInput.addEventListener("change", () => {
+  saveSettings({ browserCookies: browserCookiesInput.checked });
+});
+
+cookieBrowserInput.addEventListener("change", () => {
+  saveSettings({ cookieBrowser: cookieBrowserInput.value });
 });
 
 overlayPositionInput.addEventListener("change", () => {

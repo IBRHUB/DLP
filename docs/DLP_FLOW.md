@@ -247,7 +247,7 @@ browser process
                ▼
 ┌────────────────────────────┐
 │ Downloads\DLP              │
-│ app.log                    │
+│ logs\DLP.log               │
 └────────────────────────────┘
 ```
 
@@ -307,9 +307,7 @@ browser process
 ├──────────────────────────────┼──────────────────────────────────────────────┤
 │ downloaded media             │ %USERPROFILE%\Downloads\DLP                 │
 ├──────────────────────────────┼──────────────────────────────────────────────┤
-│ app log                      │ %LOCALAPPDATA%\DLP\logs\app.log             │
-├──────────────────────────────┼──────────────────────────────────────────────┤
-│ native host log              │ %LOCALAPPDATA%\DLP\logs\native-host.log     │
+│ DLP log                      │ %LOCALAPPDATA%\Programs\DLP\logs\DLP.log    │
 ├──────────────────────────────┼──────────────────────────────────────────────┤
 │ duplicate locks              │ %LOCALAPPDATA%\DLP\locks                    │
 ├──────────────────────────────┼──────────────────────────────────────────────┤
@@ -348,4 +346,3 @@ browser process
 │ shell is not used for downloads                              │
 └──────────────────────────────────────────────────────────────┘
 ```
-

@@ -6,13 +6,20 @@
   const BUTTON_HEIGHT = 24;
   const BUTTON_OFFSET = 12;
   const AUTO_HIDE_DELAY_MS = 2600;
+  const DEEP_SCAN_WAIT_MS = 1600;
+  const EXPERIMENTAL_POLL_MS = 120;
   const MEDIA_URL_RE = /\.(m3u8|mpd|mp4|webm|m4v|mov)(?:[?#]|$)/i;
   const STREAM_URL_RE = /(?:playlist|manifest|master|index)\.(?:m3u8|mpd)(?:[?#]|$)/i;
+  const MEDIA_QUERY_RE = /[?&](?:file|filename|name|src)=[^&#]+\.(?:m3u8|mpd|mp4|webm|m4v|mov)(?:[&#]|$)/i;
+  const AUDIO_ITAG_RE = /(?:^|[?&#])itag=(?:139|140|141|249|250|251)(?:[&#]|$)/i;
   const DEFAULT_SETTINGS = {
     silentDownload: false,
     autoHideOverlay: true,
     overlayPosition: "auto",
-    experimentalAllSites: false
+    experimentalAllSites: false,
+    deepScanner: false,
+    browserCookies: false,
+    cookieBrowser: "brave"
   };
 
   let lastUrl = location.href;
@@ -586,10 +593,10 @@
   }
 
   function getExperimentalVideoUrl() {
-    return getExperimentalCandidates()[0]?.url || null;
+    return getExperimentalCandidates(settings.deepScanner)[0]?.url || null;
   }
 
-  function getExperimentalCandidates() {
+  function getExperimentalCandidates(deepScan) {
     const candidates = [];
     const video = getVisibleVideo();
 
@@ -609,16 +616,18 @@
       createExperimentalCandidate(getMetaContent('meta[name="twitter:player:stream"]'), "meta.twitter:player:stream")
     );
 
-    for (const entry of performance.getEntriesByType("resource")) {
-      if (isLikelyMediaUrl(entry.name)) {
-        candidates.push(createExperimentalCandidate(entry.name, "performance"));
+    if (deepScan) {
+      for (const entry of performance.getEntriesByType("resource")) {
+        if (isLikelyMediaUrl(entry.name)) {
+          candidates.push(createExperimentalCandidate(entry.name, "performance", performance.timeOrigin + entry.startTime));
+        }
       }
     }
 
     return rankExperimentalCandidates(candidates.filter(Boolean));
   }
 
-  function createExperimentalCandidate(rawUrl, source) {
+  function createExperimentalCandidate(rawUrl, source, time) {
     if (!rawUrl) {
       return null;
     }
@@ -634,7 +643,7 @@
         url: parsed.href,
         type: getCandidateType(parsed.href),
         source,
-        time: Date.now()
+        time: time || Date.now()
       };
     } catch {
       return null;
@@ -642,57 +651,172 @@
   }
 
   function getCandidateType(url) {
-    if (/\.m3u8(?:[?#]|$)/i.test(url)) {
+    const mediaRole = getMediaRole(url);
+    const extension = getMediaExtension(url);
+
+    if (mediaRole === "audio") {
+      return "direct-audio";
+    }
+
+    if (extension === "m3u8") {
       return "hls";
     }
 
-    if (/\.mpd(?:[?#]|$)/i.test(url)) {
+    if (extension === "mpd") {
       return "dash";
     }
 
-    if (/\.mp4(?:[?#]|$)/i.test(url)) {
+    if (extension === "mp4") {
       return "direct-mp4";
     }
 
-    if (/\.webm(?:[?#]|$)/i.test(url)) {
+    if (extension === "webm") {
       return "direct-webm";
     }
 
-    if (/\.(m4v|mov)(?:[?#]|$)/i.test(url)) {
+    if (extension === "m4v" || extension === "mov") {
       return "direct-video";
     }
 
     return "html5-video";
   }
 
+  function getMediaExtension(url) {
+    try {
+      const parsed = new URL(url, location.href);
+      const path = decodeURIComponent(parsed.pathname).replace(/\/+$/, "");
+      const pathMatch = path.match(/\.(m3u8|mpd|mp4|webm|m4v|mov)$/i);
+
+      if (pathMatch) {
+        return pathMatch[1].toLowerCase();
+      }
+
+      const fileName = getQueryMediaFileName(parsed);
+      const queryMatch = fileName.match(/\.(m3u8|mpd|mp4|webm|m4v|mov)$/i);
+      return queryMatch ? queryMatch[1].toLowerCase() : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function getQueryMediaFileName(parsedUrl) {
+    for (const name of ["file", "filename", "name", "src"]) {
+      const value = parsedUrl.searchParams.get(name);
+
+      if (!value) {
+        continue;
+      }
+
+      const cleanValue = decodeURIComponent(value).split(/[?#]/)[0].replace(/\/+$/, "");
+      const fileName = cleanValue.split(/[\\/]/).pop() || "";
+
+      if (/\.(?:m3u8|mpd|mp4|webm|m4v|mov)$/i.test(fileName)) {
+        return fileName.toLowerCase();
+      }
+    }
+
+    return "";
+  }
+
+  function getMediaRole(url) {
+    try {
+      const parsed = new URL(url);
+      const path = decodeURIComponent(parsed.pathname).toLowerCase();
+      const query = decodeURIComponent(parsed.search).toLowerCase();
+      const queryFileName = getQueryMediaFileName(parsed);
+      const mediaText = `${path} ${query} ${queryFileName}`;
+
+      if (
+        /(?:^|[._/-])(?:audio|bestaudio|dash_audio|mp4a|aac|opus)(?:[._/-]|$)/.test(mediaText)
+        || /(?:mime|mimetype|type|contenttype)=audio(?:%2f|\/|&|$)/.test(query)
+        || AUDIO_ITAG_RE.test(parsed.search)
+      ) {
+        return "audio";
+      }
+
+      if (
+        /(?:^|[._/-])(?:video|source|dash_video|avc|h264|h265|vp9|av01)(?:[._/-]|$)/.test(mediaText)
+        || /(?:^|[._/-])(?:144|240|360|480|720|1080|1440|2160)p(?:[._/-]|$)/.test(mediaText)
+        || /(?:mime|mimetype|type|contenttype)=video(?:%2f|\/|&|$)/.test(query)
+      ) {
+        return "video";
+      }
+    } catch {
+      return "unknown";
+    }
+
+    return "unknown";
+  }
+
   function isLikelyMediaUrl(url) {
-    return MEDIA_URL_RE.test(url) || STREAM_URL_RE.test(url);
+    return MEDIA_URL_RE.test(url)
+      || STREAM_URL_RE.test(url)
+      || MEDIA_QUERY_RE.test(url)
+      || Boolean(getMediaExtension(url));
+  }
+
+  function mediaUrlShapeScore(url) {
+    try {
+      const parsed = new URL(url, location.href);
+      const queryFileName = getQueryMediaFileName(parsed);
+      const cleanPath = parsed.pathname.replace(/\/+$/, "");
+      const pathLooksMedia = MEDIA_URL_RE.test(cleanPath);
+      let score = 0;
+
+      if (queryFileName) {
+        score += 180;
+      }
+
+      if (queryFileName && !pathLooksMedia) {
+        score += 40;
+      }
+
+      if (pathLooksMedia && /\/$/i.test(parsed.pathname)) {
+        score -= 80;
+      }
+
+      return score;
+    } catch {
+      return 0;
+    }
   }
 
   function experimentalCandidateScore(candidate) {
     let score = 0;
+    const ageMs = Date.now() - (candidate.time || 0);
+    const url = candidate.url || "";
 
-    if (candidate.type === "hls") {
+    if (candidate.type === "direct-audio") {
+      score -= 80;
+    } else if (candidate.type === "direct-mp4") {
+      score += 130;
+    } else if (candidate.type === "direct-webm" || candidate.type === "direct-video") {
+      score += 125;
+    } else if (candidate.type === "hls") {
       score += 120;
     } else if (candidate.type === "dash") {
-      score += 115;
-    } else if (candidate.type === "direct-mp4") {
-      score += 95;
-    } else if (candidate.type === "direct-webm" || candidate.type === "direct-video") {
-      score += 90;
+      score += 85;
     } else {
       score += 60;
     }
 
     if (candidate.source === "video.currentSrc") {
-      score += 12;
+      score += 140;
     } else if (candidate.source === "video.src" || candidate.source === "source.src") {
-      score += 8;
+      score += 100;
     } else if (candidate.source === "performance") {
-      score += 6;
+      score += 16;
     } else if (String(candidate.source).startsWith("meta.")) {
-      score += 3;
+      score += 4;
     }
+
+    score += Math.min(20, Math.max(0, 20 - (ageMs / 30000)));
+
+    if (candidate.source === "performance" && ageMs > 120000) {
+      score -= ageMs > 300000 ? 100 : 50;
+    }
+
+    score += mediaUrlShapeScore(url);
 
     return score;
   }
@@ -711,6 +835,45 @@
       })
       .sort((first, second) => experimentalCandidateScore(second) - experimentalCandidateScore(first))
       .slice(0, 20);
+  }
+
+  function shouldWaitForExperimentalCandidates(forceExperimental, forceDeepScan) {
+    return Boolean(!getPlatform() && (forceExperimental || settings.experimentalAllSites) && (forceDeepScan || settings.deepScanner));
+  }
+
+  function hasReadyExperimentalCandidate(candidates) {
+    return candidates.some((candidate) =>
+      candidate.type !== "direct-audio"
+      && (candidate.source === "video.currentSrc"
+        || candidate.source === "video.src"
+        || candidate.source === "source.src"
+        || isLikelyMediaUrl(candidate.url)));
+  }
+
+  function waitForExperimentalCandidates(callback, forceExperimental, forceDeepScan) {
+    const deepScan = Boolean(forceDeepScan || settings.deepScanner);
+
+    if (!shouldWaitForExperimentalCandidates(forceExperimental, forceDeepScan)) {
+      callback(!getPlatform() && (forceExperimental || settings.experimentalAllSites)
+        ? getExperimentalCandidates(false)
+        : []);
+      return;
+    }
+
+    const startedAt = Date.now();
+
+    const poll = () => {
+      const candidates = getExperimentalCandidates(deepScan);
+
+      if (hasReadyExperimentalCandidate(candidates) || Date.now() - startedAt >= DEEP_SCAN_WAIT_MS) {
+        callback(candidates);
+        return;
+      }
+
+      window.setTimeout(poll, EXPERIMENTAL_POLL_MS);
+    };
+
+    poll();
   }
 
   function getVisibleVideo() {
@@ -1131,50 +1294,52 @@
     button.classList.remove("dlp-overlay-hidden");
     showToast("Sending to DLP", "success");
 
-    try {
-      chrome.runtime.sendMessage(
-        {
-          type: "dlp-download-current-video",
-          url: getDownloadUrl(),
-          title: getMediaTitle(),
-          pageUrl: location.href,
-          candidates: !getPlatform() && settings.experimentalAllSites
-            ? getExperimentalCandidates()
-            : []
-        },
-        (response) => {
-          if (!hasRuntime()) {
-            deactivateExtensionUi();
-            return;
-          }
-
-          if (chrome.runtime.lastError) {
-            setButtonStatus(button, "error", "ERR");
-            showToast("DLP app connection failed", "error");
-            console.log("DLP extension error:", chrome.runtime.lastError.message);
-          } else if (!response || response.ok === false) {
-            setButtonStatus(button, "error", "ERR");
-            showToast(response?.message || "DLP request failed", "error");
-            console.log("DLP native host response:", response);
-          } else {
-            setButtonStatus(button, "success", "OK");
-            showToast("Sent to DLP", "success");
-          }
-
-          window.setTimeout(() => {
-            if (!extensionActive) {
+    waitForExperimentalCandidates((candidates) => {
+      try {
+        chrome.runtime.sendMessage(
+          {
+            type: "dlp-download-current-video",
+            url: getDownloadUrl(),
+            title: getMediaTitle(),
+            pageUrl: location.href,
+            userAgent: navigator.userAgent,
+            deepScanner: Boolean(settings.deepScanner),
+            candidates
+          },
+          (response) => {
+            if (!hasRuntime()) {
+              deactivateExtensionUi();
               return;
             }
 
-            resetButtonStatus(button);
-          }, 1600);
-        }
-      );
-    } catch (error) {
-      showToast("Reload the DLP extension", "error");
-      console.log("DLP extension context ended:", error && error.message ? error.message : error);
-      deactivateExtensionUi();
-    }
+            if (chrome.runtime.lastError) {
+              setButtonStatus(button, "error", "ERR");
+              showToast("DLP app connection failed", "error");
+              console.log("DLP extension error:", chrome.runtime.lastError.message);
+            } else if (!response || response.ok === false) {
+              setButtonStatus(button, "error", "ERR");
+              showToast(response?.message || "DLP request failed", "error");
+              console.log("DLP native host response:", response);
+            } else {
+              setButtonStatus(button, "success", "OK");
+              showToast("Sent to DLP", "success");
+            }
+
+            window.setTimeout(() => {
+              if (!extensionActive) {
+                return;
+              }
+
+              resetButtonStatus(button);
+            }, 1600);
+          }
+        );
+      } catch (error) {
+        showToast("Reload the DLP extension", "error");
+        console.log("DLP extension context ended:", error && error.message ? error.message : error);
+        deactivateExtensionUi();
+      }
+    }, false, Boolean(settings.deepScanner));
   }
 
   function createButton() {
@@ -1493,11 +1658,24 @@
       }
 
       const experimental = Boolean(settings.experimentalAllSites || message.experimentalAllSites);
+      const deepScan = Boolean(settings.deepScanner || message.deepScanner);
+
+      if (!getPlatform() && experimental) {
+        waitForExperimentalCandidates((candidates) => {
+          sendResponse({
+            url: candidates[0]?.url || location.href,
+            title: getMediaTitle(),
+            candidates
+          });
+        }, true, deepScan);
+
+        return true;
+      }
 
       sendResponse({
         url: getDownloadUrl(),
         title: getMediaTitle(),
-        candidates: !getPlatform() && experimental ? getExperimentalCandidates() : []
+        candidates: []
       });
 
       return false;

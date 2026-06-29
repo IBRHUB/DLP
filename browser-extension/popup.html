@@ -78,6 +78,10 @@
       min-height: 34px;
     }
 
+    .setting.is-disabled {
+      opacity: 0.55;
+    }
+
     .setting-title {
       margin: 0;
       font-size: 13px;
@@ -162,6 +166,11 @@
       inset: 0;
       opacity: 0;
       cursor: pointer;
+    }
+
+    .switch input:disabled,
+    .switch input:disabled + .track {
+      cursor: default;
     }
 
     .track {
@@ -259,6 +268,38 @@
           <input id="experimentalAllSites" type="checkbox" role="switch" aria-labelledby="experimentalAllSitesLabel">
           <span class="track"></span>
         </label>
+      </div>
+
+      <div id="deepScannerRow" class="setting">
+        <p id="deepScannerLabel" class="setting-title">Deep scanner</p>
+        <label class="switch" title="Deep scanner">
+          <input id="deepScanner" type="checkbox" role="switch" aria-labelledby="deepScannerLabel">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div class="setting">
+        <p id="browserCookiesLabel" class="setting-title">Browser cookies</p>
+        <label class="switch" title="Browser cookies">
+          <input id="browserCookies" type="checkbox" role="switch" aria-labelledby="browserCookiesLabel">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div id="cookieBrowserRow" class="setting">
+        <label class="setting-title" for="cookieBrowser">Cookie browser</label>
+        <div class="setting-select">
+          <select id="cookieBrowser" title="Cookie browser">
+            <option value="brave">Brave</option>
+            <option value="chrome">Chrome</option>
+            <option value="edge">Edge</option>
+            <option value="firefox">Firefox</option>
+            <option value="opera">Opera</option>
+            <option value="vivaldi">Vivaldi</option>
+            <option value="chromium">Chromium</option>
+            <option value="whale">Whale</option>
+          </select>
+        </div>
       </div>
 
       <div class="setting">

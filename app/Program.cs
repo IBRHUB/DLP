@@ -29,7 +29,11 @@ internal static class Program
     {
         string? source = ReadOption(args, "--source");
         string? url = ReadOption(args, "--url");
+        string? audioUrl = NormalizeOptionalHttpsUrl(ReadOption(args, "--audio-url"));
         string? title = ReadOption(args, "--title");
+        string? referer = NormalizeOptionalHttpsUrl(ReadOption(args, "--referer"));
+        string? userAgent = NormalizeHeaderValue(ReadOption(args, "--user-agent"), 512);
+        string? cookieBrowser = NormalizeCookieBrowser(ReadOption(args, "--browser-cookies"));
         string? openDownload = ReadOption(args, "--open-download");
         bool silent = HasSwitch(args, "--silent");
         bool openApp = HasSwitch(args, "--open-app");
@@ -68,11 +72,11 @@ internal static class Program
 
         if (silent)
         {
-            return SilentDownloader.DownloadVideoAsync(url, source ?? "unknown", title).GetAwaiter().GetResult();
+            return SilentDownloader.DownloadVideoAsync(url, audioUrl, source ?? "unknown", title, referer, userAgent, cookieBrowser).GetAwaiter().GetResult();
         }
 
         ApplicationConfiguration.Initialize();
-        Application.Run(new DownloadForm(url, source ?? "unknown", title));
+        Application.Run(new DownloadForm(url, audioUrl, source ?? "unknown", title, referer, userAgent, cookieBrowser));
 
         return 0;
     }
@@ -99,6 +103,44 @@ internal static class Program
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         "Downloads",
         "DLP");
+
+    public static string? NormalizeOptionalHttpsUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        return Uri.TryCreate(url.Trim(), UriKind.Absolute, out Uri? uri)
+            && string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            ? uri.AbsoluteUri
+            : null;
+    }
+
+    public static string? NormalizeHeaderValue(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        string normalized = value
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim();
+
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return null;
+        }
+
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
+    }
+
+    public static string? NormalizeCookieBrowser(string? browser)
+    {
+        return CookieBrowserCatalog.Normalize(browser);
+    }
 
     public static void OpenDownloadFolder()
     {
@@ -166,25 +208,201 @@ internal static class Program
 
     public static void Log(string message)
     {
+        DlpLogger.Write("APP", message);
+    }
+}
+
+internal static class DlpLogger
+{
+    private const string LogFileName = "DLP.log";
+    private static readonly object SyncRoot = new();
+    private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
+
+    public static string LogPath => Path.Combine(GetLogDirectory(), LogFileName);
+
+    public static void Write(string component, string message)
+    {
         try
         {
-            string logDirectory = Path.Combine(
+            LogClassification classification = Classify(message);
+            string safeComponent = NormalizeToken(component, "APP");
+            string safeMessage = NormalizeMessage(message);
+            string line = string.Join(
+                " | ",
+                DateTimeOffset.UtcNow.ToString("O"),
+                classification.Level,
+                safeComponent,
+                classification.Code,
+                safeMessage) + Environment.NewLine;
+
+            lock (SyncRoot)
+            {
+                File.AppendAllText(LogPath, line, Encoding.UTF8);
+            }
+        }
+        catch
+        {
+            // Logging must never break the app or native messaging protocol.
+        }
+    }
+
+    private static string GetLogDirectory()
+    {
+        string installLogDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+
+        try
+        {
+            Directory.CreateDirectory(installLogDirectory);
+            return installLogDirectory;
+        }
+        catch
+        {
+            string fallbackDirectory = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "DLP",
                 "logs");
 
-            Directory.CreateDirectory(logDirectory);
-
-            string logPath = Path.Combine(logDirectory, "app.log");
-            string line = $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}";
-
-            File.AppendAllText(logPath, line, Encoding.UTF8);
-        }
-        catch
-        {
-            // The app should not fail just because logging failed.
+            Directory.CreateDirectory(fallbackDirectory);
+            return fallbackDirectory;
         }
     }
+
+    private static LogClassification Classify(string message)
+    {
+        string text = message.ToLowerInvariant();
+
+        if (text.Contains("yt-dlp.exe was not found", StringComparison.Ordinal))
+        {
+            return Error("missing_yt_dlp");
+        }
+
+        if (text.Contains("ffmpeg.exe was not found", StringComparison.Ordinal))
+        {
+            return Error("missing_ffmpeg");
+        }
+
+        if (text.Contains("drm", StringComparison.Ordinal) || text.Contains("encrypted", StringComparison.Ordinal))
+        {
+            return Error("encrypted_stream");
+        }
+
+        if (text.Contains("403", StringComparison.Ordinal) || text.Contains("forbidden", StringComparison.Ordinal))
+        {
+            return Error("http_forbidden");
+        }
+
+        if (text.Contains("404", StringComparison.Ordinal))
+        {
+            return Error("http_not_found");
+        }
+
+        if (text.Contains("unsupported_action", StringComparison.Ordinal))
+        {
+            return Warn("unsupported_action");
+        }
+
+        if (text.Contains("invalid_request", StringComparison.Ordinal))
+        {
+            return Warn("invalid_request");
+        }
+
+        if (text.Contains("fallback unavailable", StringComparison.Ordinal))
+        {
+            return Warn("unsupported_media_url");
+        }
+
+        if (text.Contains("duplicate", StringComparison.Ordinal) || text.Contains("already downloaded", StringComparison.Ordinal))
+        {
+            return Info("duplicate_found");
+        }
+
+        if (text.StartsWith("yt-dlp:", StringComparison.Ordinal) || text.StartsWith("yt-dlp update:", StringComparison.Ordinal))
+        {
+            return text.Contains("error", StringComparison.Ordinal)
+                ? Error("yt_dlp_error")
+                : Info("yt_dlp_output");
+        }
+
+        if (text.Contains("direct attempt failed", StringComparison.Ordinal))
+        {
+            return Warn("direct_attempt_failed");
+        }
+
+        if (text.Contains("direct redirect resolved", StringComparison.Ordinal))
+        {
+            return Info("direct_redirect");
+        }
+
+        if (text.Contains("built-in media fallback failed", StringComparison.Ordinal)
+            || text.Contains("direct download failed", StringComparison.Ordinal))
+        {
+            return Error("direct_download_failed");
+        }
+
+        if (text.Contains("download completed", StringComparison.Ordinal)
+            || text.Contains("file saved", StringComparison.Ordinal)
+            || text.Contains("updated", StringComparison.Ordinal))
+        {
+            return Info("completed");
+        }
+
+        if (text.Contains("received url", StringComparison.Ordinal))
+        {
+            return Info("request_received");
+        }
+
+        if (text.Contains("starting", StringComparison.Ordinal))
+        {
+            return Info("started");
+        }
+
+        if (text.Contains("declined by user", StringComparison.Ordinal)
+            || text.Contains("canceled by user", StringComparison.Ordinal))
+        {
+            return Info("user_canceled");
+        }
+
+        if (text.Contains("protocol", StringComparison.Ordinal))
+        {
+            return Error("native_protocol_error");
+        }
+
+        if (text.Contains("failed", StringComparison.Ordinal)
+            || text.Contains("error", StringComparison.Ordinal)
+            || text.Contains("exception", StringComparison.Ordinal)
+            || text.Contains("rejected", StringComparison.Ordinal))
+        {
+            return Error("error");
+        }
+
+        return Info("general");
+    }
+
+    private static string NormalizeToken(string value, string fallback)
+    {
+        string token = WhitespaceRegex.Replace(value.Trim(), "_").ToUpperInvariant();
+        return string.IsNullOrWhiteSpace(token) ? fallback : token;
+    }
+
+    private static string NormalizeMessage(string message)
+    {
+        string normalized = WhitespaceRegex.Replace(message.Trim(), " ");
+
+        if (normalized.Length > 4000)
+        {
+            normalized = normalized[..4000] + " ...";
+        }
+
+        return normalized;
+    }
+
+    private static LogClassification Info(string code) => new("INFO", code);
+
+    private static LogClassification Warn(string code) => new("WARN", code);
+
+    private static LogClassification Error(string code) => new("ERROR", code);
+
+    private readonly record struct LogClassification(string Level, string Code);
 }
 
 internal static class NativeMessagingHost
@@ -338,9 +556,17 @@ internal static class NativeMessagingHost
     {
         string requestedUrl = ReadString(root, "url", required: true)!;
         string? title = ReadString(root, "title", required: false);
+        string? referer = Program.NormalizeOptionalHttpsUrl(FirstNonWhiteSpace(
+            ReadString(root, "pageUrl", required: false),
+            ReadString(root, "referer", required: false)));
+        string? userAgent = Program.NormalizeHeaderValue(ReadString(root, "userAgent", required: false), 512);
+        string? cookieBrowser = ReadBoolean(root, "browserCookies", defaultValue: false)
+            ? Program.NormalizeCookieBrowser(ReadString(root, "cookieBrowser", required: false))
+            : null;
         bool silent = ReadBoolean(root, "silent", defaultValue: false);
         bool experimental = ReadBoolean(root, "experimental", defaultValue: false);
         string normalizedUrl = ValidateAndNormalizeUrl(requestedUrl, experimental);
+        string? normalizedAudioUrl = NormalizeOptionalNativeUrl(ReadString(root, "audioUrl", required: false), experimental);
         string appPath = ResolveCurrentAppPath();
 
         ProcessStartInfo startInfo = new()
@@ -356,10 +582,34 @@ internal static class NativeMessagingHost
         startInfo.ArgumentList.Add("--url");
         startInfo.ArgumentList.Add(normalizedUrl);
 
+        if (normalizedAudioUrl is not null)
+        {
+            startInfo.ArgumentList.Add("--audio-url");
+            startInfo.ArgumentList.Add(normalizedAudioUrl);
+        }
+
         if (!string.IsNullOrWhiteSpace(title))
         {
             startInfo.ArgumentList.Add("--title");
             startInfo.ArgumentList.Add(title.Trim());
+        }
+
+        if (referer is not null)
+        {
+            startInfo.ArgumentList.Add("--referer");
+            startInfo.ArgumentList.Add(referer);
+        }
+
+        if (userAgent is not null)
+        {
+            startInfo.ArgumentList.Add("--user-agent");
+            startInfo.ArgumentList.Add(userAgent);
+        }
+
+        if (cookieBrowser is not null)
+        {
+            startInfo.ArgumentList.Add("--browser-cookies");
+            startInfo.ArgumentList.Add(cookieBrowser);
         }
 
         if (silent)
@@ -375,8 +625,8 @@ internal static class NativeMessagingHost
         }
 
         Log(silent
-            ? $"Started silent DLP download for URL: {normalizedUrl} experimental={experimental}"
-            : $"Opened DLP window for URL: {normalizedUrl} experimental={experimental}");
+            ? $"Started silent DLP download for URL: {normalizedUrl} audioPair={normalizedAudioUrl is not null} experimental={experimental}"
+            : $"Opened DLP window for URL: {normalizedUrl} audioPair={normalizedAudioUrl is not null} experimental={experimental}");
 
         return new
         {
@@ -632,6 +882,26 @@ internal static class NativeMessagingHost
         return value.GetString();
     }
 
+    private static string? NormalizeOptionalNativeUrl(string? url, bool experimental)
+    {
+        return string.IsNullOrWhiteSpace(url)
+            ? null
+            : ValidateAndNormalizeUrl(url, experimental);
+    }
+
+    private static string? FirstNonWhiteSpace(params string?[] values)
+    {
+        foreach (string? value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
     private static bool ReadBoolean(JsonElement root, string propertyName, bool defaultValue)
     {
         if (!root.TryGetProperty(propertyName, out JsonElement value))
@@ -725,24 +995,7 @@ internal static class NativeMessagingHost
 
     private static void Log(string message)
     {
-        try
-        {
-            string logDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "DLP",
-                "logs");
-
-            Directory.CreateDirectory(logDirectory);
-
-            string logPath = Path.Combine(logDirectory, "native-host.log");
-            string line = $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}";
-
-            File.AppendAllText(logPath, line, Encoding.UTF8);
-        }
-        catch
-        {
-            // Native Messaging stdout must remain reserved for protocol responses.
-        }
+        DlpLogger.Write("HOST", message);
     }
 
     private sealed class NativeHostException : Exception
@@ -757,19 +1010,284 @@ internal static class NativeMessagingHost
     }
 }
 
+internal static class DirectMediaPairDownloader
+{
+    private static readonly Regex WhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
+
+    public static async Task<int> DownloadAndMergeAsync(
+        string videoUrl,
+        string audioUrl,
+        string downloadDirectory,
+        string? title,
+        string ytDlpPath,
+        string ffmpegPath,
+        string? referer,
+        string? userAgent,
+        string? cookieBrowser,
+        bool createDuplicateCopy,
+        Action<string> log,
+        Action<string, int>? statusChanged,
+        Action<Process?>? processChanged)
+    {
+        string tempDirectory = Path.Combine(downloadDirectory, ".dlp-temp", Guid.NewGuid().ToString("N"));
+        string videoPath = Path.Combine(tempDirectory, "video.mp4");
+        string audioPath = Path.Combine(tempDirectory, "audio.mp4");
+        string outputPath = BuildOutputPath(downloadDirectory, title, videoUrl, createDuplicateCopy);
+        string? normalizedCookieBrowser = CookieBrowserCatalog.Normalize(cookieBrowser);
+
+        Directory.CreateDirectory(tempDirectory);
+
+        try
+        {
+            if (normalizedCookieBrowser is not null)
+            {
+                log($"Using browser cookies for paired media: {normalizedCookieBrowser}");
+            }
+
+            statusChanged?.Invoke("Downloading video stream", 15);
+            int videoExitCode = await RunYtDlpDirectAsync(
+                ytDlpPath,
+                videoUrl,
+                videoPath,
+                tempDirectory,
+                referer,
+                userAgent,
+                normalizedCookieBrowser,
+                log,
+                processChanged);
+
+            if (videoExitCode != 0)
+            {
+                log($"Paired media video stream failed with exit code {videoExitCode}");
+                return videoExitCode;
+            }
+
+            statusChanged?.Invoke("Downloading audio stream", 50);
+            int audioExitCode = await RunYtDlpDirectAsync(
+                ytDlpPath,
+                audioUrl,
+                audioPath,
+                tempDirectory,
+                referer,
+                userAgent,
+                normalizedCookieBrowser,
+                log,
+                processChanged);
+
+            if (audioExitCode != 0)
+            {
+                log($"Paired media audio stream failed with exit code {audioExitCode}");
+                return audioExitCode;
+            }
+
+            statusChanged?.Invoke("Merging audio and video", 85);
+            int mergeExitCode = await RunFfmpegMergeAsync(
+                ffmpegPath,
+                videoPath,
+                audioPath,
+                outputPath,
+                tempDirectory,
+                log,
+                processChanged);
+
+            if (mergeExitCode != 0)
+            {
+                log($"Paired media merge failed with exit code {mergeExitCode}");
+                return mergeExitCode;
+            }
+
+            statusChanged?.Invoke("Done - saved in Downloads\\DLP", 100);
+            log($"Paired media download completed: {outputPath}");
+            return 0;
+        }
+        finally
+        {
+            processChanged?.Invoke(null);
+            TryDeleteDirectory(tempDirectory, log);
+        }
+    }
+
+    private static async Task<int> RunYtDlpDirectAsync(
+        string ytDlpPath,
+        string url,
+        string outputPath,
+        string workingDirectory,
+        string? referer,
+        string? userAgent,
+        string? cookieBrowser,
+        Action<string> log,
+        Action<Process?>? processChanged)
+    {
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = ytDlpPath,
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+
+        startInfo.ArgumentList.Add("--newline");
+        startInfo.ArgumentList.Add("--no-playlist");
+        startInfo.ArgumentList.Add("--no-mtime");
+        startInfo.ArgumentList.Add("--windows-filenames");
+        YtDlpNetworkArgumentBuilder.AddNetworkArguments(startInfo, referer, userAgent);
+        YtDlpCookieArgumentBuilder.AddCookieArguments(startInfo, cookieBrowser, url);
+        startInfo.ArgumentList.Add("-o");
+        startInfo.ArgumentList.Add(outputPath);
+        startInfo.ArgumentList.Add(url);
+
+        return await RunProcessAsync(startInfo, "yt-dlp", log, processChanged);
+    }
+
+    private static async Task<int> RunFfmpegMergeAsync(
+        string ffmpegPath,
+        string videoPath,
+        string audioPath,
+        string outputPath,
+        string workingDirectory,
+        Action<string> log,
+        Action<Process?>? processChanged)
+    {
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = ffmpegPath,
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+
+        startInfo.ArgumentList.Add("-hide_banner");
+        startInfo.ArgumentList.Add("-y");
+        startInfo.ArgumentList.Add("-i");
+        startInfo.ArgumentList.Add(videoPath);
+        startInfo.ArgumentList.Add("-i");
+        startInfo.ArgumentList.Add(audioPath);
+        startInfo.ArgumentList.Add("-map");
+        startInfo.ArgumentList.Add("0:v:0");
+        startInfo.ArgumentList.Add("-map");
+        startInfo.ArgumentList.Add("1:a:0");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("copy");
+        startInfo.ArgumentList.Add("-shortest");
+        startInfo.ArgumentList.Add("-movflags");
+        startInfo.ArgumentList.Add("+faststart");
+        startInfo.ArgumentList.Add(outputPath);
+
+        return await RunProcessAsync(startInfo, "ffmpeg", log, processChanged);
+    }
+
+    private static async Task<int> RunProcessAsync(
+        ProcessStartInfo startInfo,
+        string toolName,
+        Action<string> log,
+        Action<Process?>? processChanged)
+    {
+        using Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
+        process.OutputDataReceived += (_, e) => LogToolLine(toolName, e.Data, log);
+        process.ErrorDataReceived += (_, e) => LogToolLine(toolName, e.Data, log);
+
+        processChanged?.Invoke(process);
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        await process.WaitForExitAsync();
+        return process.ExitCode;
+    }
+
+    private static void LogToolLine(string toolName, string? line, Action<string> log)
+    {
+        if (!string.IsNullOrWhiteSpace(line))
+        {
+            log($"{toolName}: {line}");
+        }
+    }
+
+    private static string BuildOutputPath(string downloadDirectory, string? title, string videoUrl, bool createDuplicateCopy)
+    {
+        string baseName = BuildSafeBaseName(title, videoUrl);
+
+        if (createDuplicateCopy)
+        {
+            baseName = $"{baseName} copy-{DateTimeOffset.Now:yyyyMMdd-HHmmss}";
+        }
+
+        string outputPath = Path.Combine(downloadDirectory, $"{baseName}.mp4");
+
+        if (!File.Exists(outputPath))
+        {
+            return outputPath;
+        }
+
+        return Path.Combine(downloadDirectory, $"{baseName} copy-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.mp4");
+    }
+
+    private static string BuildSafeBaseName(string? title, string videoUrl)
+    {
+        string value = !string.IsNullOrWhiteSpace(title)
+            ? title.Trim()
+            : GetUrlFileStem(videoUrl);
+
+        foreach (char invalidCharacter in Path.GetInvalidFileNameChars())
+        {
+            value = value.Replace(invalidCharacter, ' ');
+        }
+
+        value = WhitespaceRegex.Replace(value, " ").Trim();
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            value = $"DLP {DateTimeOffset.Now:yyyyMMdd-HHmmss}";
+        }
+
+        return value.Length <= 160 ? value : value[..160].Trim();
+    }
+
+    private static string GetUrlFileStem(string url)
+    {
+        return Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)
+            ? Path.GetFileNameWithoutExtension(uri.AbsolutePath)
+            : "DLP media";
+    }
+
+    private static void TryDeleteDirectory(string directory, Action<string> log)
+    {
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            log($"Temporary media cleanup failed: {ex.Message}");
+        }
+    }
+}
+
 internal static class SilentDownloader
 {
-    public static async Task<int> DownloadVideoAsync(string url, string source, string? title)
+    public static async Task<int> DownloadVideoAsync(
+        string url,
+        string? audioUrl,
+        string source,
+        string? title,
+        string? referer,
+        string? userAgent,
+        string? cookieBrowser)
     {
         string downloadDirectory = Program.GetDownloadDirectory();
         string? ytDlpPath = ToolResolver.ResolveToolPath("DLP_YTDLP_PATH", "yt-dlp.exe");
         string? ffmpegPath = ToolResolver.ResolveToolPath("DLP_FFMPEG_PATH", "ffmpeg.exe");
-
-        if (ytDlpPath is null)
-        {
-            Program.Log("Silent download failed: yt-dlp.exe was not found");
-            return 1;
-        }
 
         Directory.CreateDirectory(downloadDirectory);
         Program.Log($"Starting silent video download from {source}: {url}");
@@ -778,6 +1296,104 @@ internal static class SilentDownloader
         {
             Program.Log($"Silent download skipped existing title '{title}': {existingFilePath}");
             return 0;
+        }
+
+        if (string.IsNullOrWhiteSpace(audioUrl) && BuiltInMediaDownloader.CanDownload(url, null))
+        {
+            try
+            {
+                Program.Log($"Starting silent built-in media download from {source}: {url}");
+                bool directOk = await BuiltInMediaDownloader.DownloadAsync(
+                    url,
+                    null,
+                    downloadDirectory,
+                    title,
+                    referer,
+                    userAgent,
+                    ffmpegPath,
+                    createDuplicateCopy: false,
+                    Program.Log,
+                    null,
+                    null);
+
+                if (directOk)
+                {
+                    return 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                Program.Log($"Silent built-in media download failed before yt-dlp: {ex.Message}");
+            }
+        }
+
+        if (CookieBrowserCatalog.Normalize(cookieBrowser) is string normalizedCookieBrowser)
+        {
+            Program.Log($"Using browser cookies for yt-dlp: {normalizedCookieBrowser}");
+        }
+
+        if (ytDlpPath is null)
+        {
+            Program.Log("Silent download failed: yt-dlp.exe was not found");
+            return 1;
+        }
+
+        if (!string.IsNullOrWhiteSpace(audioUrl))
+        {
+            if (ffmpegPath is null)
+            {
+                Program.Log("Silent paired media download failed: ffmpeg.exe was not found");
+                return 1;
+            }
+
+            try
+            {
+                int pairExitCode = await DirectMediaPairDownloader.DownloadAndMergeAsync(
+                    url,
+                    audioUrl,
+                    downloadDirectory,
+                    title,
+                    ytDlpPath,
+                    ffmpegPath,
+                    referer,
+                    userAgent,
+                    cookieBrowser,
+                    createDuplicateCopy: false,
+                    Program.Log,
+                    null,
+                    null);
+
+                if (pairExitCode == 0)
+                {
+                    return 0;
+                }
+
+                if (BuiltInMediaDownloader.CanDownload(url, audioUrl))
+                {
+                    Program.Log("Trying built-in paired media download after yt-dlp failure");
+                    bool fallbackOk = await BuiltInMediaDownloader.DownloadAsync(
+                        url,
+                        audioUrl,
+                        downloadDirectory,
+                        title,
+                        referer,
+                        userAgent,
+                        ffmpegPath,
+                        createDuplicateCopy: false,
+                        Program.Log,
+                        null,
+                        null);
+
+                    return fallbackOk ? 0 : pairExitCode;
+                }
+
+                return pairExitCode;
+            }
+            catch (Exception ex)
+            {
+                Program.Log($"Silent paired media download failed: {ex}");
+                return 1;
+            }
         }
 
         ProcessStartInfo startInfo = new()
@@ -792,7 +1408,7 @@ internal static class SilentDownloader
             StandardErrorEncoding = Encoding.UTF8
         };
 
-        AddCommonArguments(startInfo, downloadDirectory, ffmpegPath);
+        AddCommonArguments(startInfo, downloadDirectory, ffmpegPath, referer, userAgent, cookieBrowser, url);
         startInfo.ArgumentList.Add("-f");
         startInfo.ArgumentList.Add("bv*+ba/b");
         startInfo.ArgumentList.Add("--merge-output-format");
@@ -819,6 +1435,27 @@ internal static class SilentDownloader
             else
             {
                 Program.Log($"Silent video download failed with exit code {process.ExitCode}");
+
+                if (BuiltInMediaDownloader.CanDownload(url, null))
+                {
+                    Program.Log("Trying built-in media download after yt-dlp failure");
+                    bool fallbackOk = await BuiltInMediaDownloader.DownloadAsync(
+                        url,
+                        null,
+                        downloadDirectory,
+                        title,
+                        referer,
+                        userAgent,
+                        ffmpegPath,
+                        createDuplicateCopy: false,
+                        Program.Log,
+                        null,
+                        null);
+
+                    return fallbackOk ? 0 : process.ExitCode;
+                }
+
+                Program.Log($"Built-in media fallback unavailable for silent URL: {url}");
             }
 
             return process.ExitCode;
@@ -830,12 +1467,21 @@ internal static class SilentDownloader
         }
     }
 
-    private static void AddCommonArguments(ProcessStartInfo startInfo, string downloadDirectory, string? ffmpegPath)
+    private static void AddCommonArguments(
+        ProcessStartInfo startInfo,
+        string downloadDirectory,
+        string? ffmpegPath,
+        string? referer,
+        string? userAgent,
+        string? cookieBrowser,
+        string url)
     {
         startInfo.ArgumentList.Add("--newline");
         startInfo.ArgumentList.Add("--no-playlist");
         startInfo.ArgumentList.Add("--no-mtime");
         startInfo.ArgumentList.Add("--windows-filenames");
+        YtDlpNetworkArgumentBuilder.AddNetworkArguments(startInfo, referer, userAgent);
+        YtDlpCookieArgumentBuilder.AddCookieArguments(startInfo, cookieBrowser, url);
         startInfo.ArgumentList.Add("-P");
         startInfo.ArgumentList.Add(downloadDirectory);
         startInfo.ArgumentList.Add("-o");
@@ -1511,9 +2157,97 @@ internal sealed class DlpComboBox : ComboBox
 
 internal readonly record struct YtDlpDownloadOptions(bool EmbedSubs, bool UseCookies, string Browser);
 
+internal static class CookieBrowserCatalog
+{
+    public static readonly string[] Values =
+    [
+        "brave",
+        "chrome",
+        "edge",
+        "firefox",
+        "opera",
+        "vivaldi",
+        "chromium",
+        "whale"
+    ];
+
+    public static string? Normalize(string? browser)
+    {
+        if (string.IsNullOrWhiteSpace(browser))
+        {
+            return null;
+        }
+
+        string normalized = browser.Trim().ToLowerInvariant();
+
+        foreach (string value in Values)
+        {
+            if (string.Equals(normalized, value, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalized, ToDisplayName(value), StringComparison.OrdinalIgnoreCase))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    public static string ToDisplayName(string browser)
+    {
+        return browser switch
+        {
+            "brave" => "Brave",
+            "chrome" => "Chrome",
+            "edge" => "Edge",
+            "firefox" => "Firefox",
+            "opera" => "Opera",
+            "vivaldi" => "Vivaldi",
+            "chromium" => "Chromium",
+            "whale" => "Whale",
+            _ => string.IsNullOrWhiteSpace(browser)
+                ? string.Empty
+                : string.Concat(browser[..1].ToUpperInvariant(), browser[1..])
+        };
+    }
+}
+
+internal static class YtDlpNetworkArgumentBuilder
+{
+    public static void AddNetworkArguments(ProcessStartInfo startInfo, string? referer, string? userAgent)
+    {
+        if (!string.IsNullOrWhiteSpace(referer))
+        {
+            startInfo.ArgumentList.Add("--referer");
+            startInfo.ArgumentList.Add(referer.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(userAgent))
+        {
+            startInfo.ArgumentList.Add("--user-agent");
+            startInfo.ArgumentList.Add(userAgent.Trim());
+        }
+    }
+}
+
+internal static class YtDlpCookieArgumentBuilder
+{
+    public static void AddCookieArguments(ProcessStartInfo startInfo, string? browser, string? url)
+    {
+        string? normalizedBrowser = CookieBrowserCatalog.Normalize(browser);
+
+        if (normalizedBrowser is null)
+        {
+            return;
+        }
+
+        startInfo.ArgumentList.Add("--cookies-from-browser");
+        startInfo.ArgumentList.Add(normalizedBrowser);
+    }
+}
+
 internal static class YtDlpArgumentBuilder
 {
-    public static void AddVideoArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options)
+    public static void AddVideoArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options, string url)
     {
         startInfo.ArgumentList.Add("-f");
         startInfo.ArgumentList.Add("bv*+ba/b");
@@ -1526,10 +2260,10 @@ internal static class YtDlpArgumentBuilder
             startInfo.ArgumentList.Add("--embed-subs");
         }
 
-        AddCookieArguments(startInfo, options);
+        AddCookieArguments(startInfo, options, url);
     }
 
-    public static void AddAudioArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options)
+    public static void AddAudioArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options, string url)
     {
         startInfo.ArgumentList.Add("-f");
         startInfo.ArgumentList.Add("bestaudio/best");
@@ -1539,29 +2273,31 @@ internal static class YtDlpArgumentBuilder
         startInfo.ArgumentList.Add("--audio-quality");
         startInfo.ArgumentList.Add("0");
 
-        AddCookieArguments(startInfo, options);
+        AddCookieArguments(startInfo, options, url);
     }
 
-    private static void AddCookieArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options)
+    private static void AddCookieArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options, string url)
     {
         if (!options.UseCookies || string.IsNullOrWhiteSpace(options.Browser))
         {
             return;
         }
 
-        startInfo.ArgumentList.Add("--cookies-from-browser");
-        startInfo.ArgumentList.Add(options.Browser.Trim());
+        YtDlpCookieArgumentBuilder.AddCookieArguments(startInfo, options.Browser, url);
     }
 }
 
 internal sealed class DownloadForm : Form
 {
     private static readonly Regex ProgressRegex = new(@"(?<percent>\d{1,3}(?:\.\d+)?)%", RegexOptions.Compiled);
-    private static readonly string[] CookieBrowsers = ["chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium"];
 
     private readonly string _url;
+    private readonly string? _audioUrl;
     private readonly string _source;
     private readonly string? _title;
+    private readonly string? _referer;
+    private readonly string? _userAgent;
+    private readonly string? _initialCookieBrowser;
     private readonly string _downloadDirectory;
     private readonly string? _ytDlpPath;
     private readonly string? _ffmpegPath;
@@ -1582,16 +2318,21 @@ internal sealed class DownloadForm : Form
     private bool _isUpdatingApp;
     private bool _isUpdatingYtDlp;
 
-    public DownloadForm(string url, string source, string? title)
+    public DownloadForm(string url, string? audioUrl, string source, string? title, string? referer, string? userAgent, string? cookieBrowser)
     {
         _url = url;
+        _audioUrl = audioUrl;
         _source = source;
         _title = title;
+        _referer = referer;
+        _userAgent = userAgent;
+        _initialCookieBrowser = cookieBrowser;
         _downloadDirectory = Program.GetDownloadDirectory();
         _ytDlpPath = ToolResolver.ResolveToolPath("DLP_YTDLP_PATH", "yt-dlp.exe");
         _ffmpegPath = ToolResolver.ResolveToolPath("DLP_FFMPEG_PATH", "ffmpeg.exe");
 
         BuildUi();
+        ApplyInitialCookieBrowser();
         SetReadyState();
     }
 
@@ -1926,7 +2667,7 @@ internal sealed class DownloadForm : Form
     private YtDlpDownloadOptions GetYtDlpOptions() => new(
         _embedSubsSwitch.Checked,
         _cookiesSwitch.Checked,
-        (_browserSelect.SelectedItem?.ToString() ?? "chrome").ToLowerInvariant());
+        CookieBrowserCatalog.Normalize(_browserSelect.SelectedItem?.ToString()) ?? "brave");
 
     private void UpdateBrowserComboEnabled()
     {
@@ -1956,7 +2697,7 @@ internal sealed class DownloadForm : Form
         _browserSelect.BeginUpdate();
         _browserSelect.Items.Clear();
 
-        foreach (string browser in CookieBrowsers)
+        foreach (string browser in CookieBrowserCatalog.Values)
         {
             _browserSelect.Items.Add(FormatBrowserName(browser));
         }
@@ -1972,17 +2713,33 @@ internal sealed class DownloadForm : Form
         _browserSelect.DrawMode = DrawMode.OwnerDrawFixed;
         _browserSelect.ItemHeight = 30;
         _browserSelect.IntegralHeight = false;
-        _browserSelect.MaxDropDownItems = CookieBrowsers.Length;
-        _browserSelect.DropDownHeight = (CookieBrowsers.Length * 30) + 2;
+        _browserSelect.MaxDropDownItems = CookieBrowserCatalog.Values.Length;
+        _browserSelect.DropDownHeight = (CookieBrowserCatalog.Values.Length * 30) + 2;
         _browserSelect.Enabled = false;
         _browserSelect.DrawItem += DrawBrowserItem;
         UpdateBrowserComboEnabled();
     }
 
-    private static string FormatBrowserName(string browser) =>
-        string.IsNullOrWhiteSpace(browser)
-            ? string.Empty
-            : string.Concat(browser[..1].ToUpperInvariant(), browser[1..]);
+    private void ApplyInitialCookieBrowser()
+    {
+        if (string.IsNullOrWhiteSpace(_initialCookieBrowser))
+        {
+            return;
+        }
+
+        string displayName = FormatBrowserName(_initialCookieBrowser);
+        int index = _browserSelect.Items.IndexOf(displayName);
+
+        if (index >= 0)
+        {
+            _browserSelect.SelectedIndex = index;
+        }
+
+        _cookiesSwitch.Checked = true;
+        UpdateBrowserComboEnabled();
+    }
+
+    private static string FormatBrowserName(string browser) => CookieBrowserCatalog.ToDisplayName(browser);
 
     private static void DrawBrowserItem(object? sender, DrawItemEventArgs e)
     {
@@ -2106,6 +2863,28 @@ internal sealed class DownloadForm : Form
 
         createDuplicateCopy = existingFilePath is not null;
 
+        YtDlpDownloadOptions options = GetYtDlpOptions();
+
+        if (kind == DownloadKind.Video && !string.IsNullOrWhiteSpace(_audioUrl))
+        {
+            await StartPairedVideoDownloadAsync(createDuplicateCopy, options);
+            return;
+        }
+
+        string downloadUrl = kind == DownloadKind.Audio && !string.IsNullOrWhiteSpace(_audioUrl)
+            ? _audioUrl
+            : _url;
+
+        if (await TryBuiltInDirectFirstAsync(kind, downloadUrl, createDuplicateCopy))
+        {
+            return;
+        }
+
+        if (options.UseCookies)
+        {
+            Program.Log($"Using browser cookies for yt-dlp: {options.Browser}");
+        }
+
         ProcessStartInfo startInfo = new()
         {
             FileName = _ytDlpPath,
@@ -2120,18 +2899,16 @@ internal sealed class DownloadForm : Form
 
         AddCommonArguments(startInfo, createDuplicateCopy);
 
-        YtDlpDownloadOptions options = GetYtDlpOptions();
-
         if (kind == DownloadKind.Video)
         {
-            YtDlpArgumentBuilder.AddVideoArguments(startInfo, options);
+            YtDlpArgumentBuilder.AddVideoArguments(startInfo, options, downloadUrl);
         }
         else
         {
-            YtDlpArgumentBuilder.AddAudioArguments(startInfo, options);
+            YtDlpArgumentBuilder.AddAudioArguments(startInfo, options, downloadUrl);
         }
 
-        startInfo.ArgumentList.Add(_url);
+        startInfo.ArgumentList.Add(downloadUrl);
 
         using Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
         _downloadProcess = process;
@@ -2157,13 +2934,27 @@ internal sealed class DownloadForm : Form
             }
             else
             {
-                SetStatus("Download failed - check app.log", 0);
+                _downloadProcess = null;
+
+                if (await TryBuiltInFallbackAsync(kind, downloadUrl, null, createDuplicateCopy))
+                {
+                    return;
+                }
+
+                SetStatus("Download failed - check DLP.log", 0);
                 Program.Log($"{kind} download failed with exit code {process.ExitCode}.");
             }
         }
         catch (Exception ex)
         {
-            SetStatus("Could not start download - check app.log", 0);
+            _downloadProcess = null;
+
+            if (await TryBuiltInFallbackAsync(kind, downloadUrl, null, createDuplicateCopy))
+            {
+                return;
+            }
+
+            SetStatus("Could not start download - check DLP.log", 0);
             Program.Log($"Download start failed: {ex}");
         }
         finally
@@ -2172,6 +2963,193 @@ internal sealed class DownloadForm : Form
             _isPreparingDownload = false;
             SetIdleButtons();
         }
+    }
+
+    private async Task<bool> TryBuiltInDirectFirstAsync(
+        DownloadKind kind,
+        string downloadUrl,
+        bool createDuplicateCopy)
+    {
+        if (!BuiltInMediaDownloader.CanDownload(downloadUrl, null))
+        {
+            return false;
+        }
+
+        _isPreparingDownload = false;
+        SetBusyState(kind);
+        SetStatus("Downloading with DLP", 0);
+        Program.Log($"Starting built-in media download: url={downloadUrl}");
+
+        try
+        {
+            bool success = await BuiltInMediaDownloader.DownloadAsync(
+                downloadUrl,
+                null,
+                _downloadDirectory,
+                _title,
+                _referer,
+                _userAgent,
+                _ffmpegPath,
+                createDuplicateCopy,
+                Program.Log,
+                SetStatus,
+                process => _downloadProcess = process);
+
+            if (success)
+            {
+                SetStatus("Done - saved in Downloads\\DLP", 100);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"Built-in media download failed before yt-dlp: {ex.Message}");
+        }
+        finally
+        {
+            _downloadProcess = null;
+        }
+
+        SetStatus("Trying yt-dlp", 0);
+        return false;
+    }
+
+    private async Task StartPairedVideoDownloadAsync(bool createDuplicateCopy, YtDlpDownloadOptions options)
+    {
+        if (_ytDlpPath is null || string.IsNullOrWhiteSpace(_audioUrl))
+        {
+            _isPreparingDownload = false;
+            SetIdleButtons();
+            return;
+        }
+
+        if (_ffmpegPath is null)
+        {
+            SetStatus("ffmpeg.exe was not found", 0);
+            Program.Log("Paired media download failed: ffmpeg.exe was not found.");
+            _isPreparingDownload = false;
+            SetIdleButtons();
+            return;
+        }
+
+        SetBusyState(DownloadKind.Video);
+
+        try
+        {
+            _isPreparingDownload = false;
+            Program.Log($"Starting paired media download from {_source}: video={_url} audio={_audioUrl}");
+
+            int exitCode = await DirectMediaPairDownloader.DownloadAndMergeAsync(
+                _url,
+                _audioUrl,
+                _downloadDirectory,
+                _title,
+                _ytDlpPath,
+                _ffmpegPath,
+                _referer,
+                _userAgent,
+                options.UseCookies ? options.Browser : null,
+                createDuplicateCopy,
+                Program.Log,
+                SetStatus,
+                process => _downloadProcess = process);
+
+            if (exitCode == 0)
+            {
+                SetStatus("Done - saved in Downloads\\DLP", 100);
+            }
+            else if (await TryBuiltInFallbackAsync(DownloadKind.Video, _url, _audioUrl, createDuplicateCopy))
+            {
+                return;
+            }
+            else
+            {
+                SetStatus("Download failed - check DLP.log", 0);
+            }
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Could not start download - check DLP.log", 0);
+            Program.Log($"Paired media download failed: {ex}");
+        }
+        finally
+        {
+            _downloadProcess = null;
+            _isPreparingDownload = false;
+            SetIdleButtons();
+        }
+    }
+
+    private async Task<bool> TryBuiltInFallbackAsync(
+        DownloadKind kind,
+        string downloadUrl,
+        string? audioUrl,
+        bool createDuplicateCopy)
+    {
+        if (!BuiltInMediaDownloader.CanDownload(downloadUrl, audioUrl))
+        {
+            Program.Log($"Built-in media fallback unavailable for URL: {downloadUrl} audioPair={audioUrl is not null}");
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(audioUrl) && _ffmpegPath is null)
+        {
+            Program.Log("Built-in paired media fallback skipped: ffmpeg.exe was not found.");
+            return false;
+        }
+
+        if (!ConfirmBuiltInFallback(!string.IsNullOrWhiteSpace(audioUrl)))
+        {
+            Program.Log("Built-in media fallback declined by user.");
+            return false;
+        }
+
+        SetBusyState(kind);
+        SetStatus("Trying DLP direct download", 0);
+        Program.Log($"Starting built-in media fallback: url={downloadUrl} audioPair={audioUrl is not null}");
+
+        try
+        {
+            bool success = await BuiltInMediaDownloader.DownloadAsync(
+                downloadUrl,
+                audioUrl,
+                _downloadDirectory,
+                _title,
+                _referer,
+                _userAgent,
+                _ffmpegPath,
+                createDuplicateCopy,
+                Program.Log,
+                SetStatus,
+                process => _downloadProcess = process);
+
+            SetStatus(success ? "Done - saved in Downloads\\DLP" : "DLP direct download failed", success ? 100 : 0);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"Built-in media fallback failed: {ex}");
+            SetStatus("DLP direct download failed", 0);
+            return true;
+        }
+        finally
+        {
+            _downloadProcess = null;
+        }
+    }
+
+    private bool ConfirmBuiltInFallback(bool audioPair)
+    {
+        string mode = audioPair ? "captured video and audio links" : "the captured media link";
+        DialogResult result = MessageBox.Show(
+            this,
+            $"yt-dlp could not download this media.{Environment.NewLine}{Environment.NewLine}Try DLP direct download using {mode}?",
+            "DLP direct download",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button1);
+
+        return result == DialogResult.Yes;
     }
 
     private bool ConfirmDuplicateDownload(string existingFilePath)
@@ -2200,6 +3178,7 @@ internal sealed class DownloadForm : Form
         startInfo.ArgumentList.Add("--no-playlist");
         startInfo.ArgumentList.Add("--no-mtime");
         startInfo.ArgumentList.Add("--windows-filenames");
+        YtDlpNetworkArgumentBuilder.AddNetworkArguments(startInfo, _referer, _userAgent);
         startInfo.ArgumentList.Add("-P");
         startInfo.ArgumentList.Add(_downloadDirectory);
         startInfo.ArgumentList.Add("-o");
@@ -2339,7 +3318,7 @@ internal sealed class DownloadForm : Form
         catch (Exception ex)
         {
             _progressBar.Visible = false;
-            SetStatus("App update failed check app.log", 0);
+            SetStatus("App update failed check DLP.log", 0);
             Program.Log($"App update failed: {ex}");
         }
         finally
@@ -2402,13 +3381,13 @@ internal sealed class DownloadForm : Form
             }
             else
             {
-                SetStatus("yt-dlp update failed check app.log", 0);
+                SetStatus("yt-dlp update failed check DLP.log", 0);
                 Program.Log($"yt-dlp update failed with exit code {process.ExitCode}.");
             }
         }
         catch (Exception ex)
         {
-            SetStatus("Could not update yt-dlp check app.log", 0);
+            SetStatus("Could not update yt-dlp check DLP.log", 0);
             Program.Log($"yt-dlp update start failed: {ex}");
         }
         finally
