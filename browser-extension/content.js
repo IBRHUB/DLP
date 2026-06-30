@@ -1453,18 +1453,23 @@
       #${STREAM_PANEL_ID} {
         position: fixed;
         z-index: 2147483647;
-        width: min(520px, calc(100vw - 20px));
-        max-height: min(340px, calc(100vh - 40px));
-        border: 1px solid color-mix(in srgb, var(--dlp-border-strong) 78%, transparent);
+        width: min(560px, calc(100vw - 20px));
+        max-height: min(330px, calc(100vh - 40px));
+        border: 1px solid color-mix(in srgb, var(--dlp-text-primary) 24%, transparent);
         border-radius: 8px;
-        background: color-mix(in srgb, var(--dlp-bg) 97%, transparent);
+        background: color-mix(in srgb, var(--dlp-surface) 46%, transparent);
         color: var(--dlp-text-primary);
-        box-shadow: 0 18px 52px color-mix(in srgb, #000 42%, transparent);
+        box-shadow: 0 18px 52px color-mix(in srgb, #000 46%, transparent);
         overflow: hidden;
-        backdrop-filter: blur(10px);
+        backdrop-filter: blur(12px) saturate(1.1);
         opacity: 1;
         transform: translateY(0) scale(1);
         transition: opacity 150ms ease, transform 150ms ease;
+      }
+
+      #${STREAM_PANEL_ID},
+      #${STREAM_PANEL_ID} * {
+        box-sizing: border-box;
       }
 
       #${STREAM_PANEL_ID}.dlp-stream-panel-hidden {
@@ -1482,26 +1487,97 @@
 
       #${STREAM_PANEL_ID} .dlp-stream-head {
         grid-template-columns: minmax(0, 1fr) auto auto;
-        padding: 10px 12px;
-        border-bottom: 1px solid color-mix(in srgb, var(--dlp-border) 70%, transparent);
-        font: 700 12px/1.2 Arial, sans-serif;
+        gap: 8px;
+        min-height: 56px;
+        padding: 10px 14px;
+        border-bottom: 1px solid color-mix(in srgb, var(--dlp-text-primary) 13%, transparent);
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-title-wrap {
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-title {
+        font: 800 13px/1.2 Arial, sans-serif;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-count {
+        color: color-mix(in srgb, var(--dlp-text-secondary) 82%, transparent);
+        font: 700 11px/1.2 Arial, sans-serif;
       }
 
       #${STREAM_PANEL_ID} .dlp-stream-list {
         display: grid;
-        gap: 7px;
-        max-height: 276px;
+        gap: 6px;
+        max-height: 264px;
         padding: 10px 12px 12px;
         overflow: auto;
+        scrollbar-width: thin;
+        scrollbar-color: transparent transparent;
+      }
+
+      #${STREAM_PANEL_ID}:hover .dlp-stream-list {
+        scrollbar-color: color-mix(in srgb, var(--dlp-text-primary) 30%, transparent) transparent;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-list::-webkit-scrollbar {
+        width: 8px;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-list::-webkit-scrollbar-thumb {
+        border: 2px solid transparent;
+        border-radius: 999px;
+        background: transparent;
+        background-clip: padding-box;
+      }
+
+      #${STREAM_PANEL_ID}:hover .dlp-stream-list::-webkit-scrollbar-thumb {
+        background: color-mix(in srgb, var(--dlp-text-primary) 28%, transparent);
+        background-clip: padding-box;
       }
 
       #${STREAM_PANEL_ID} .dlp-stream-row {
-        grid-template-columns: 50px minmax(0, 1fr) 52px 46px 46px;
-        min-height: 44px;
-        padding: 7px;
-        border: 1px solid color-mix(in srgb, var(--dlp-border) 72%, transparent);
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 7px;
+        min-height: 78px;
+        padding: 8px;
+        border: 1px solid color-mix(in srgb, var(--dlp-text-primary) 16%, transparent);
         border-radius: 6px;
-        background: color-mix(in srgb, var(--dlp-surface) 78%, transparent);
+        background: color-mix(in srgb, var(--dlp-bg) 48%, transparent);
+        transition: background 140ms ease, border-color 140ms ease;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-row:hover {
+        border-color: color-mix(in srgb, var(--dlp-accent-interactive) 44%, transparent);
+        background: color-mix(in srgb, var(--dlp-bg) 62%, transparent);
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-row-top {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-meta,
+      #${STREAM_PANEL_ID} .dlp-stream-actions {
+        display: flex;
+        align-items: center;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-meta {
+        min-width: 0;
+        gap: 8px;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-actions {
+        flex: 0 0 auto;
+        gap: 6px;
       }
 
       #${STREAM_PANEL_ID} .dlp-stream-type {
@@ -1509,22 +1585,66 @@
         align-items: center;
         justify-content: center;
         min-width: 0;
-        height: 28px;
+        flex: 0 0 auto;
+        width: 52px;
+        height: 30px;
         border-radius: 5px;
-        background: color-mix(in srgb, var(--dlp-accent-interactive) 11%, transparent);
+        background: color-mix(in srgb, var(--dlp-accent-interactive) 18%, transparent);
         color: var(--dlp-accent-interactive);
         font: 800 11px/1 Arial, sans-serif;
         text-transform: uppercase;
       }
 
-      #${STREAM_PANEL_ID} .dlp-stream-url,
+      #${STREAM_PANEL_ID} .dlp-stream-host,
       #${STREAM_PANEL_ID} .dlp-stream-empty {
         min-width: 0;
-        color: var(--dlp-text-secondary);
-        font: 12px/1.35 Consolas, "Cascadia Mono", monospace;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-host {
+        color: var(--dlp-text-primary);
+        font: 700 12px/1.25 Consolas, "Cascadia Mono", monospace;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-url-scroll {
+        min-width: 0;
+        width: 100%;
+        height: 28px;
+        padding: 6px 8px;
+        border: 1px solid color-mix(in srgb, var(--dlp-text-primary) 12%, transparent);
+        border-radius: 5px;
+        background: color-mix(in srgb, #000 18%, transparent);
+        color: color-mix(in srgb, var(--dlp-text-secondary) 86%, transparent);
+        font: 11px/14px Consolas, "Cascadia Mono", monospace;
+        overflow-x: auto;
+        overflow-y: hidden;
+        overscroll-behavior-x: contain;
+        scrollbar-width: thin;
+        scrollbar-color: color-mix(in srgb, var(--dlp-text-primary) 24%, transparent) transparent;
+        white-space: nowrap;
+        word-break: normal;
+        overflow-wrap: normal;
+        user-select: text;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-url-scroll::-webkit-scrollbar {
+        height: 6px;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-url-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-url-scroll::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--dlp-text-primary) 24%, transparent);
+      }
+
+      #${STREAM_PANEL_ID} .dlp-stream-empty {
+        color: var(--dlp-text-secondary);
+        font: 12px/1.35 Arial, sans-serif;
       }
 
       #${STREAM_PANEL_ID} .dlp-stream-empty {
@@ -1540,9 +1660,11 @@
         height: 30px;
         border: 1px solid color-mix(in srgb, var(--dlp-border) 88%, transparent);
         border-radius: 6px;
-        background: color-mix(in srgb, var(--dlp-surface) 86%, var(--dlp-bg));
+        background: color-mix(in srgb, var(--dlp-surface) 46%, transparent);
         color: var(--dlp-text-primary);
-        font: 700 11px Arial, sans-serif;
+        font: 800 11px Arial, sans-serif;
+        line-height: 28px;
+        text-align: center;
         cursor: pointer;
         transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
       }
@@ -1562,6 +1684,7 @@
       #${STREAM_PANEL_ID} .dlp-stream-close,
       #${STREAM_PANEL_ID} .dlp-stream-refresh {
         width: 34px;
+        padding: 0;
       }
 
       #${STREAM_PANEL_ID} button:hover {
@@ -1819,6 +1942,55 @@
     return (getMediaExtension(candidate.url) || "File").toUpperCase();
   }
 
+  function getStreamDisplayParts(candidate) {
+    try {
+      const parsed = new URL(candidate.url);
+      const pathParts = parsed.pathname.split("/").filter(Boolean);
+      const compactPath = pathParts.length
+        ? `/${pathParts.slice(Math.max(0, pathParts.length - 3)).join("/")}`
+        : parsed.pathname || "/";
+
+      return {
+        host: parsed.hostname.replace(/^www\./i, ""),
+        path: `${compactPath}${parsed.search ? " ?" : ""}`
+      };
+    } catch {
+      return {
+        host: getStreamLabel(candidate),
+        path: candidate.url
+      };
+    }
+  }
+
+  function getStreamRowScore(candidate) {
+    let score = 0;
+
+    if (candidate.type === "hls") {
+      score += 40;
+    } else if (candidate.type === "dash") {
+      score += 32;
+    } else if (candidate.type?.startsWith("direct")) {
+      score += 20;
+    }
+
+    if (candidate.source === "clappr.source" || candidate.source === "hls.loadSource") {
+      score += 30;
+    } else if (candidate.source === "network.redirect") {
+      score += 20;
+    } else if (candidate.source === "network") {
+      score += 10;
+    }
+
+    return score;
+  }
+
+  function getVisibleStreamCandidates(candidates) {
+    return candidates
+      .slice()
+      .sort((first, second) => getStreamRowScore(second) - getStreamRowScore(first))
+      .slice(0, 10);
+  }
+
   function copyText(text, callback) {
     const fallback = () => {
       const input = document.createElement("textarea");
@@ -2050,7 +2222,7 @@
 
   function placeStreamPanel(panel, button) {
     const rect = button.getBoundingClientRect();
-    const width = Math.min(520, window.innerWidth - 20);
+    const width = Math.min(560, window.innerWidth - 20);
     const maxHeight = Math.min(340, window.innerHeight - 40);
     const left = clamp(rect.left, 12, Math.max(12, window.innerWidth - width - 12));
     let top = rect.bottom + 8;
@@ -2065,7 +2237,16 @@
 
   function renderStreamRows(panel, candidates) {
     const list = panel.querySelector(".dlp-stream-list");
+    const count = panel.querySelector(".dlp-stream-count");
+    const visibleCandidates = getVisibleStreamCandidates(candidates);
+
     list.replaceChildren();
+
+    if (count) {
+      count.textContent = candidates.length > visibleCandidates.length
+        ? `${visibleCandidates.length} of ${candidates.length}`
+        : `${candidates.length}`;
+    }
 
     if (!candidates.length) {
       const empty = document.createElement("div");
@@ -2075,18 +2256,26 @@
       return;
     }
 
-    for (const candidate of candidates.slice(0, 12)) {
+    for (const candidate of visibleCandidates) {
+      const display = getStreamDisplayParts(candidate);
       const row = document.createElement("div");
       row.className = "dlp-stream-row";
+
+      const top = document.createElement("div");
+      top.className = "dlp-stream-row-top";
+
+      const meta = document.createElement("div");
+      meta.className = "dlp-stream-meta";
 
       const type = document.createElement("span");
       type.className = "dlp-stream-type";
       type.textContent = getStreamLabel(candidate);
 
-      const url = document.createElement("span");
-      url.className = "dlp-stream-url";
-      url.title = candidate.url;
-      url.textContent = candidate.url;
+      const host = document.createElement("span");
+      host.className = "dlp-stream-host";
+      host.textContent = display.host;
+
+      meta.append(type, host);
 
       const copy = document.createElement("button");
       copy.className = "dlp-stream-copy";
@@ -2154,7 +2343,17 @@
         });
       });
 
-      row.append(type, url, copy, vlc, live);
+      const actions = document.createElement("div");
+      actions.className = "dlp-stream-actions";
+      actions.append(copy, vlc, live);
+
+      const url = document.createElement("div");
+      url.className = "dlp-stream-url-scroll";
+      url.title = candidate.url;
+      url.textContent = candidate.url;
+
+      top.append(meta, actions);
+      row.append(top, url);
       list.appendChild(row);
     }
   }
@@ -2203,8 +2402,18 @@
     const head = document.createElement("div");
     head.className = "dlp-stream-head";
 
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "dlp-stream-title-wrap";
+
     const title = document.createElement("span");
+    title.className = "dlp-stream-title";
     title.textContent = "Streams";
+
+    const count = document.createElement("span");
+    count.className = "dlp-stream-count";
+    count.textContent = "0";
+
+    titleWrap.append(title, count);
 
     const refresh = document.createElement("button");
     refresh.className = "dlp-stream-refresh";
@@ -2234,7 +2443,7 @@
       scheduleAutoHide(button);
     });
 
-    head.append(title, refresh, close);
+    head.append(titleWrap, refresh, close);
     panel.append(head, list);
     document.body.appendChild(panel);
     placeStreamPanel(panel, button);
