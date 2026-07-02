@@ -1,6 +1,9 @@
 const videosElement = document.getElementById("videos");
 const refreshButton = document.getElementById("refreshVideos");
 const downloadPathElement = document.getElementById("downloadPath");
+const folderStatusElement = document.getElementById("folderStatus");
+const unlockFolderButton = document.getElementById("unlockFolder");
+const lockFolderButton = document.getElementById("lockFolder");
 const viewerFrameElement = document.getElementById("viewerFrame");
 const viewerMessageElement = document.getElementById("viewerMessage");
 const viewerPlayButton = document.getElementById("viewerPlay");
@@ -43,6 +46,13 @@ function formatTime(value) {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
 }
 
+function formatUnlockTime(value) {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function appendText(parent, text, className) {
   const element = document.createElement("div");
   element.textContent = text;
@@ -83,6 +93,63 @@ function sendNativeCommand(action, details, callback) {
   });
 }
 
+function renderFolderAccess(folderAccess) {
+  if (!folderStatusElement || !unlockFolderButton || !lockFolderButton) {
+    return;
+  }
+
+  const access = folderAccess || {};
+  const hasAccess = folderAccess && typeof folderAccess === "object";
+  const unlockTime = formatUnlockTime(access.unlockedUntilUtc);
+  const isSupported = Boolean(hasAccess && access.isSupported !== false);
+  const isUnlocked = Boolean(access.isUnlocked);
+  const isBusy = Boolean(access.hasActiveOperations);
+  let text = "Folder security unavailable";
+  let state = "unsupported";
+
+  if (isSupported && isUnlocked) {
+    text = isBusy ? "Unlocked for download" : `Unlocked${unlockTime ? ` until ${unlockTime}` : ""}`;
+    state = "unlocked";
+  } else if (isSupported) {
+    text = "Locked";
+    state = "locked";
+  }
+
+  folderStatusElement.textContent = text;
+  folderStatusElement.dataset.state = state;
+  unlockFolderButton.disabled = false;
+  unlockFolderButton.textContent = isUnlocked ? "Open folder" : "Unlock & open";
+  lockFolderButton.disabled = !isSupported || !isUnlocked || isBusy;
+}
+
+function unlockFolder() {
+  unlockFolderButton.disabled = true;
+  unlockFolderButton.textContent = "Opening";
+
+  sendNativeCommand("unlock_download_folder", { open: true }, (response) => {
+    renderFolderAccess(response.folderAccess);
+
+    if (!response.ok) {
+      unlockFolderButton.textContent = "Open failed";
+      window.setTimeout(() => renderFolderAccess(response.folderAccess), 1400);
+      return;
+    }
+
+    loadDownloads();
+  });
+}
+
+function lockFolder() {
+  lockFolderButton.disabled = true;
+  lockFolderButton.textContent = "Locking";
+
+  sendNativeCommand("lock_download_folder", {}, (response) => {
+    renderFolderAccess(response.folderAccess);
+    lockFolderButton.textContent = "Lock now";
+    loadDownloads();
+  });
+}
+
 function openDownload(fileName, button) {
   button.disabled = true;
   button.textContent = "...";
@@ -90,6 +157,10 @@ function openDownload(fileName, button) {
   sendNativeCommand("open_download", { fileName }, (response) => {
     button.disabled = false;
     button.textContent = response.ok ? "Open" : "Open failed";
+
+    if (response.ok) {
+      loadDownloads();
+    }
 
     if (!response.ok) {
       window.setTimeout(() => {
@@ -256,7 +327,7 @@ function renderPreview(file) {
   ensurePreviewElements();
 
   if (!file.fileUrl) {
-    setPreviewMessage("Preview unavailable", file.fileName ? "Use Open to play it in Windows" : "Refresh downloads");
+    setPreviewMessage("Folder locked", file.fileName ? "Unlock downloads to preview or open it" : "Refresh downloads");
     return;
   }
 
@@ -425,6 +496,7 @@ function loadDownloads() {
     const files = Array.isArray(response.files) ? response.files : [];
     videosElement.replaceChildren();
     downloadPathElement.textContent = response.directory || "";
+    renderFolderAccess(response.folderAccess);
 
     if (files.length === 0) {
       clearViewer("No downloads yet");
@@ -446,6 +518,8 @@ function loadDownloads() {
 }
 
 refreshButton.addEventListener("click", loadDownloads);
+unlockFolderButton.addEventListener("click", unlockFolder);
+lockFolderButton.addEventListener("click", lockFolder);
 viewerPlayButton.addEventListener("click", () => {
   if (selectedFile?.fileName) {
     openDownload(selectedFile.fileName, viewerPlayButton);

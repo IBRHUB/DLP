@@ -23,6 +23,8 @@
       --accent: #6f8aa8;
       --accent-active: #2f81f7;
       --accent-interactive: #58a6ff;
+      --success: #44d17d;
+      --error: #ff7b86;
       --surface-muted: #151b23;
       --ink: var(--text-primary);
       --muted: var(--text-secondary);
@@ -72,6 +74,7 @@
       align-items: center;
       justify-content: space-between;
       gap: var(--space-4);
+      flex-wrap: wrap;
     }
 
     .path {
@@ -86,6 +89,40 @@
       margin: 0;
       font-size: 22px;
       letter-spacing: 0;
+    }
+
+    .folder-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--space-2);
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    .folder-status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      max-width: 240px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0 11px;
+      color: var(--text-secondary);
+      background: var(--surface);
+      font-size: 12px;
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+
+    .folder-status[data-state="locked"] {
+      color: var(--error);
+      border-color: color-mix(in srgb, var(--error) 58%, var(--border));
+    }
+
+    .folder-status[data-state="unlocked"] {
+      color: var(--success);
+      border-color: color-mix(in srgb, var(--success) 55%, var(--border));
     }
 
     button {
@@ -446,6 +483,15 @@
         font-size: 20px;
       }
 
+      .folder-actions {
+        justify-content: flex-start;
+        width: 100%;
+      }
+
+      .folder-status {
+        max-width: 100%;
+      }
+
       button {
         min-width: 44px;
       }
@@ -469,7 +515,12 @@
     <div class="topbar">
       <header>
         <h1>DLP Downloads</h1>
-        <button id="refreshVideos" type="button">Refresh</button>
+        <div class="folder-actions" aria-label="Download folder access">
+          <span id="folderStatus" class="folder-status" data-state="unsupported">Checking</span>
+          <button id="unlockFolder" type="button">Unlock & open</button>
+          <button id="lockFolder" type="button">Lock now</button>
+          <button id="refreshVideos" type="button">Refresh</button>
+        </div>
       </header>
       <div id="downloadPath" class="path"></div>
     </div>

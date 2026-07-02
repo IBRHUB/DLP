@@ -319,7 +319,39 @@ browser process
 └──────────────────────────────┴──────────────────────────────────────────────┘
 ```
 
-## 8. Security Boundary
+## 8. Crypt Download Folder
+
+```text
+┌──────────────────────────────┐
+│ %USERPROFILE%\Downloads\DLP  │
+╞══════════════════════════════╡
+│ NTFS inheritance disabled    │
+│ SYSTEM: full control         │
+│ Administrators: no lock ACE  │
+│ Current user: no file read   │
+└──────────────┬───────────────┘
+               │
+               │ dashboard unlock
+               ▼
+┌──────────────────────────────┐
+│ Current user: temporary      │
+│ modify/read access           │
+│ default duration: 10 minutes │
+└──────────────┬───────────────┘
+               │
+               │ lock now / expiry / download end
+               ▼
+┌──────────────────────────────┐
+│ Folder returns to locked     │
+│ state without Deny rules     │
+│ child files are updated too  │
+└──────────────────────────────┘
+```
+
+The Crypt manager refuses to manage any path except the exact DLP folder under
+the current Windows user's profile. It does not change the parent `Downloads` folder.
+
+## 9. Security Boundary
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐

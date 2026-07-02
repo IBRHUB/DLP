@@ -196,6 +196,12 @@ Supported actions:
 
 - `ping`
 - `download`
+- `list_downloads`
+- `open_download`
+- `open_folder`
+- `download_folder_status`
+- `unlock_download_folder`
+- `lock_download_folder`
 
 The app accepts only absolute HTTPS URLs from supported hosts
 
@@ -240,6 +246,17 @@ Download folder:
 ```text
 %USERPROFILE%\Downloads\DLP
 ```
+
+Crypt folder access:
+
+- DLP manages NTFS permissions only on `Downloads\DLP`
+- The folder is locked by default when DLP manages it
+- Crypt applies lock and unlock ACLs recursively to existing child files
+- Locked mode does not grant `Administrators` file read or folder listing access
+- The Downloads dashboard can unlock and open it temporarily
+- Active downloads receive temporary write access and relock afterward
+- DLP avoids explicit `Deny` rules so Windows recovery remains predictable
+- A Windows administrator can still take ownership or change permissions manually
 
 ## Logs
 

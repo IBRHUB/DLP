@@ -431,9 +431,68 @@ function isSupportedPageUrl(url) {
   ].includes(host);
 }
 
+function isSupportedMediaPageUrl(url) {
+  const safeUrl = getSafeHttpsUrl(url);
+
+  if (!safeUrl) {
+    return false;
+  }
+
+  const parsed = new URL(safeUrl);
+  const host = parsed.hostname.toLowerCase();
+  const path = parsed.pathname.toLowerCase();
+
+  if (["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)) {
+    return path === "/watch" && parsed.searchParams.has("v")
+      || path.startsWith("/shorts/");
+  }
+
+  if (host === "youtu.be") {
+    return path.length > 1;
+  }
+
+  if (["tiktok.com", "www.tiktok.com", "m.tiktok.com"].includes(host)) {
+    return /\/@[^/]+\/video\/\d+/i.test(path);
+  }
+
+  if (["vm.tiktok.com", "vt.tiktok.com"].includes(host)) {
+    return true;
+  }
+
+  if (["instagram.com", "www.instagram.com", "m.instagram.com"].includes(host)) {
+    return path.startsWith("/reel/")
+      || path.startsWith("/p/")
+      || path.startsWith("/tv/");
+  }
+
+  if (["x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(host)) {
+    return /\/[^/]+\/status\/\d+/i.test(path);
+  }
+
+  if (["soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com"].includes(host)) {
+    const ignoredPaths = ["/", "/discover", "/stream", "/you", "/upload", "/search"];
+    return !ignoredPaths.some((ignoredPath) => path === ignoredPath || path.startsWith(`${ignoredPath}/`));
+  }
+
+  return false;
+}
+
 function chooseDownloadUrl(preferredUrl, details) {
   const preferredSafeUrl = getSafeHttpsUrl(preferredUrl);
-  const pageUrl = details.pageUrl || preferredSafeUrl;
+  const pageSafeUrl = getSafeHttpsUrl(details.pageUrl);
+  const pageUrl = pageSafeUrl || preferredSafeUrl;
+
+  if (pageSafeUrl && isSupportedMediaPageUrl(pageSafeUrl)) {
+    if (details.preservePreferredUrl && preferredSafeUrl && isSupportedMediaPageUrl(preferredSafeUrl)) {
+      return preferredSafeUrl;
+    }
+
+    return pageSafeUrl;
+  }
+
+  if (preferredSafeUrl && isSupportedMediaPageUrl(preferredSafeUrl)) {
+    return preferredSafeUrl;
+  }
 
   if (!details.settings?.experimentalAllSites || isSupportedPageUrl(pageUrl)) {
     return preferredSafeUrl || preferredUrl;
@@ -456,6 +515,20 @@ function chooseDownloadUrl(preferredUrl, details) {
   }
 
   return bestCandidate?.url || preferredSafeUrl || preferredUrl;
+}
+
+function chooseFallbackMedia(candidates, primaryUrl, mediaPair) {
+  const primarySafeUrl = getSafeHttpsUrl(primaryUrl);
+
+  if (mediaPair?.videoUrl && mediaPair.videoUrl !== primarySafeUrl) {
+    return mediaPair.videoUrl;
+  }
+
+  const bestDirect = rankCandidates(candidates || []).find((candidate) =>
+    ["direct-mp4", "direct-webm", "direct-video"].includes(candidate.type)
+    && candidate.url !== primarySafeUrl);
+
+  return bestDirect?.url || null;
 }
 
 function scanPageCandidates(tab, settings, callback) {
@@ -502,6 +575,13 @@ function rememberNetworkCandidate(details, source = "network") {
   tabCandidates.set(details.tabId, pruneCandidates(list));
 }
 
+function shouldRememberNetworkCandidate(details, settings) {
+  return Boolean(settings.experimentalAllSites)
+    || Boolean(settings.streamOverlay)
+    || isSupportedPageUrl(details.documentUrl)
+    || isSupportedPageUrl(details.initiator);
+}
+
 function sendNativePayload(payload, callback) {
   chrome.runtime.sendNativeMessage(HOST_NAME, payload, (response) => {
     if (chrome.runtime.lastError) {
@@ -531,6 +611,7 @@ function sendNativePayload(payload, callback) {
 function sendDownloadWithSettings(url, options, settings, callback) {
   const details = options || {};
   const audioUrl = getSafeHttpsUrl(details.audioUrl);
+  const fallbackUrl = getSafeHttpsUrl(details.fallbackUrl);
 
   if (!url) {
     const error = {
@@ -552,6 +633,7 @@ function sendDownloadWithSettings(url, options, settings, callback) {
     action: "download",
     url,
     ...(audioUrl ? { audioUrl } : {}),
+    ...(fallbackUrl ? { fallbackUrl } : {}),
     title: details.title || "",
     pageUrl: details.pageUrl || "",
     userAgent: details.userAgent || navigator.userAgent || "",
@@ -866,12 +948,16 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         candidates,
         preservePreferredUrl: Boolean(info.linkUrl && !isLikelyMediaUrl(info.linkUrl))
       });
+      const fallbackMedia = isSupportedMediaPageUrl(url)
+        ? chooseFallbackMedia(candidates, url, mediaPair)
+        : null;
 
       sendDownloadWithSettings(url, {
         title: tab?.title || "",
         pageUrl: tab?.url || info.pageUrl || "",
         userAgent: navigator.userAgent || "",
-        audioUrl: mediaPair?.videoUrl === getSafeHttpsUrl(url) ? mediaPair.audioUrl : ""
+        audioUrl: mediaPair?.videoUrl === getSafeHttpsUrl(url) ? mediaPair.audioUrl : "",
+        fallbackUrl: fallbackMedia || ""
       }, settings);
     });
   });
@@ -883,9 +969,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "dlp-native-command") {
-    sendNativeCommand(message.action, {
-      fileName: message.fileName || ""
-    }, sendResponse);
+    const details = {};
+
+    if (typeof message.fileName === "string") {
+      details.fileName = message.fileName;
+    }
+
+    if (typeof message.open === "boolean") {
+      details.open = message.open;
+    }
+
+    sendNativeCommand(message.action, details, sendResponse);
     return true;
   }
 
@@ -904,12 +998,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         pageUrl: message.pageUrl || sender.tab?.url,
         candidates
       });
+      const fallbackMedia = isSupportedMediaPageUrl(url)
+        ? chooseFallbackMedia(candidates, url, mediaPair)
+        : null;
 
       sendDownloadWithSettings(url, {
         title,
         pageUrl: message.pageUrl || sender.tab?.url || "",
         userAgent: message.userAgent || navigator.userAgent || "",
-        audioUrl: mediaPair?.videoUrl === getSafeHttpsUrl(url) ? mediaPair.audioUrl : ""
+        audioUrl: mediaPair?.videoUrl === getSafeHttpsUrl(url) ? mediaPair.audioUrl : "",
+        fallbackUrl: fallbackMedia || ""
       }, settings, sendResponse);
     });
     return true;
@@ -1019,7 +1117,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 if (chrome.webRequest?.onBeforeRequest) {
   chrome.webRequest.onBeforeRequest.addListener(
     (details) => {
-      if (settingsCache.experimentalAllSites || settingsCache.streamOverlay) {
+      if (shouldRememberNetworkCandidate(details, settingsCache)) {
         rememberNetworkCandidate(details);
         return;
       }
@@ -1029,7 +1127,7 @@ if (chrome.webRequest?.onBeforeRequest) {
       }
 
       getSettings((settings) => {
-        if (settings.experimentalAllSites || settings.streamOverlay) {
+        if (shouldRememberNetworkCandidate(details, settings)) {
           rememberNetworkCandidate(details);
         }
       });
@@ -1053,7 +1151,7 @@ if (chrome.webRequest?.onBeforeRedirect) {
         url: details.redirectUrl
       };
 
-      if (settingsCache.experimentalAllSites || settingsCache.streamOverlay) {
+      if (shouldRememberNetworkCandidate(redirectedDetails, settingsCache)) {
         rememberNetworkCandidate(redirectedDetails, "network.redirect");
         return;
       }
@@ -1063,7 +1161,7 @@ if (chrome.webRequest?.onBeforeRedirect) {
       }
 
       getSettings((settings) => {
-        if (settings.experimentalAllSites || settings.streamOverlay) {
+        if (shouldRememberNetworkCandidate(redirectedDetails, settings)) {
           rememberNetworkCandidate(redirectedDetails, "network.redirect");
         }
       });
