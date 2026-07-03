@@ -6,6 +6,8 @@ const MEDIA_URL_RE = /\.(m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[?#]|$)/i;
 const STREAM_URL_RE = /(?:playlist|manifest|master|index)\.(?:m3u8|m3u|mpd)(?:[?#]|$)/i;
 const MEDIA_QUERY_RE = /[?&](?:file|filename|name|src|url)=[^&#]+\.(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[&#]|$)/i;
 const AUDIO_ITAG_RE = /(?:^|[?&#])itag=(?:139|140|141|249|250|251)(?:[&#]|$)/i;
+const MEDIA_REQUEST_TYPES = ["image", "object", "media", "xmlhttprequest", "other"];
+const REDIRECT_REQUEST_TYPES = ["main_frame", "sub_frame", ...MEDIA_REQUEST_TYPES];
 
 const DEFAULT_SETTINGS = {
   silentDownload: false,
@@ -37,12 +39,15 @@ const SUPPORTED_DOCUMENT_URL_PATTERNS = [
   "*://instagram.com/*",
   "*://www.instagram.com/*",
   "*://m.instagram.com/*",
+  "*://cdninstagram.com/*",
+  "*://*.cdninstagram.com/*",
   "*://x.com/*",
   "*://www.x.com/*",
   "*://mobile.x.com/*",
   "*://twitter.com/*",
   "*://www.twitter.com/*",
   "*://mobile.twitter.com/*",
+  "*://video.twimg.com/*",
   "*://soundcloud.com/*",
   "*://www.soundcloud.com/*",
   "*://m.soundcloud.com/*",
@@ -162,9 +167,82 @@ function getQueryMediaFileName(parsedUrl) {
   return "";
 }
 
+function decodeInstagramBase64Value(value) {
+  if (!value) {
+    return "";
+  }
+
+  try {
+    const normalized = String(value)
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    return atob(padded);
+  } catch {
+    return "";
+  }
+}
+
+function getInstagramCdnSignalText(parsedUrl) {
+  const efg = decodeInstagramBase64Value(parsedUrl.searchParams.get("efg"));
+  const ncVs = decodeInstagramBase64Value(parsedUrl.searchParams.get("_nc_vs"));
+
+  return `${parsedUrl.pathname} ${parsedUrl.search} ${efg} ${ncVs}`.toLowerCase();
+}
+
+function isInstagramByteRangeUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.searchParams.has("bytestart") || parsed.searchParams.has("byteend");
+  } catch {
+    return false;
+  }
+}
+
+function getInstagramCdnMediaRole(url) {
+  try {
+    const parsed = new URL(url);
+
+    if (!isInstagramCdnHost(parsed.hostname.toLowerCase())) {
+      return "unknown";
+    }
+
+    const efgText = decodeInstagramBase64Value(parsed.searchParams.get("efg")).toLowerCase();
+    const signalText = getInstagramCdnSignalText(parsed);
+    const audioRe = /(?:^|[._/-])(?:audio|heaac|mp4a|aac|opus|dash_audio|audio_dashinit)(?:[._/-]|$)/;
+    const videoRe = /(?:^|[._/-])(?:video|progressive|dash_baseline|avc|h264|h265|vp9|av01|vencode)(?:[._/-]|$)|(?:^|[._/-])(?:144|240|360|480|576|720|1080|1440|2160)(?:[._/-]|$)/;
+
+    if (audioRe.test(efgText)) {
+      return "audio";
+    }
+
+    if (videoRe.test(efgText)) {
+      return "video";
+    }
+
+    if (audioRe.test(signalText) && !videoRe.test(signalText)) {
+      return "audio";
+    }
+
+    if (videoRe.test(signalText)) {
+      return "video";
+    }
+  } catch {
+    return "unknown";
+  }
+
+  return "unknown";
+}
+
 function getMediaRole(url) {
   try {
     const parsed = new URL(url);
+    const instagramRole = getInstagramCdnMediaRole(url);
+
+    if (instagramRole !== "unknown") {
+      return instagramRole;
+    }
+
     const path = decodeURIComponent(parsed.pathname).toLowerCase();
     const query = decodeURIComponent(parsed.search).toLowerCase();
     const queryFileName = getQueryMediaFileName(parsed);
@@ -199,6 +277,23 @@ function isLikelyMediaUrl(url) {
     || Boolean(getMediaExtension(url));
 }
 
+function getResponseHeaderValue(details, headerName) {
+  const headers = Array.isArray(details?.responseHeaders)
+    ? details.responseHeaders
+    : [];
+  const wanted = headerName.toLowerCase();
+  const header = headers.find((item) => String(item.name || "").toLowerCase() === wanted);
+
+  return header?.value || "";
+}
+
+function isLikelyMediaResponse(details) {
+  const contentType = getResponseHeaderValue(details, "content-type").toLowerCase();
+
+  return /^(?:video|audio)\//.test(contentType)
+    || /(?:mpegurl|dash|mp4|webm|quicktime)/.test(contentType);
+}
+
 function mediaUrlShapeScore(url) {
   try {
     const parsed = new URL(url);
@@ -217,6 +312,24 @@ function mediaUrlShapeScore(url) {
 
     if (pathLooksMedia && /\/$/i.test(parsed.pathname)) {
       score -= 80;
+    }
+
+    if (isInstagramByteRangeUrl(url)) {
+      score -= 500;
+    }
+
+    if (isInstagramCdnHost(parsed.hostname.toLowerCase())) {
+      const role = getInstagramCdnMediaRole(url);
+
+      if (role === "video") {
+        score += 260;
+      } else if (role === "audio") {
+        score -= 650;
+      }
+
+      if (!isInstagramByteRangeUrl(url)) {
+        score += 120;
+      }
     }
 
     return score;
@@ -342,7 +455,9 @@ function candidateScore(item) {
     score += 30;
   }
 
-  if (item.source === "video.currentSrc") {
+  if (String(item.source).startsWith("instagram.video.")) {
+    score += 150;
+  } else if (item.source === "video.currentSrc") {
     score += 140;
   } else if (item.source === "video.src" || item.source === "source.src") {
     score += 100;
@@ -350,6 +465,12 @@ function candidateScore(item) {
     score += 90;
   } else if (item.source === "clappr.source" || item.source === "hls.loadSource") {
     score += 130;
+  } else if (item.source === "instagram.performance") {
+    score += 55;
+  } else if (item.source === "instagram.script") {
+    score += 45;
+  } else if (item.source === "network.headers") {
+    score += 70;
   } else if (item.source === "network") {
     score += 24;
   } else if (item.source === "performance") {
@@ -405,6 +526,10 @@ function isSupportedPageUrl(url) {
 
   const host = new URL(safeUrl).hostname.toLowerCase();
 
+  if (isInstagramCdnHost(host)) {
+    return true;
+  }
+
   return [
     "youtube.com",
     "www.youtube.com",
@@ -424,11 +549,88 @@ function isSupportedPageUrl(url) {
     "twitter.com",
     "www.twitter.com",
     "mobile.twitter.com",
+    "video.twimg.com",
     "soundcloud.com",
     "www.soundcloud.com",
     "m.soundcloud.com",
     "on.soundcloud.com"
   ].includes(host);
+}
+
+function isInstagramHost(host) {
+  return ["instagram.com", "www.instagram.com", "m.instagram.com"].includes(host);
+}
+
+function isInstagramCdnHost(host) {
+  return host === "cdninstagram.com"
+    || host.endsWith(".cdninstagram.com")
+    || (host.includes("instagram") && host.endsWith(".fbcdn.net"));
+}
+
+function isInstagramCdnMediaUrl(url) {
+  const safeUrl = getSafeHttpsUrl(url);
+
+  if (!safeUrl) {
+    return false;
+  }
+
+  try {
+    const host = new URL(safeUrl).hostname.toLowerCase();
+    return isInstagramCdnHost(host) && isLikelyMediaUrl(safeUrl);
+  } catch {
+    return false;
+  }
+}
+
+function isInstagramPageUrl(url) {
+  const safeUrl = getSafeHttpsUrl(url);
+
+  if (!safeUrl) {
+    return false;
+  }
+
+  try {
+    return isInstagramHost(new URL(safeUrl).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function normalizeInstagramMediaUrl(url) {
+  const safeUrl = getSafeHttpsUrl(url);
+
+  if (!safeUrl) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(safeUrl);
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname;
+
+    if (!isInstagramHost(host)) {
+      return null;
+    }
+
+    const postMatch = path.match(/^\/(?:(?!share\/)[^/]+\/)?(p|tv|reels?)\/([^/?#&]+)/i);
+
+    if (postMatch) {
+      const mediaType = postMatch[1].toLowerCase() === "reel"
+        ? "reels"
+        : postMatch[1].toLowerCase();
+      return `https://www.instagram.com/${mediaType}/${postMatch[2]}/`;
+    }
+
+    const storyMatch = path.match(/^\/stories\/(highlights\/\d+|[^/?#]+(?:\/\d+)?)/i);
+
+    if (storyMatch) {
+      return `https://www.instagram.com/stories/${storyMatch[1]}/`;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 function isSupportedMediaPageUrl(url) {
@@ -442,9 +644,19 @@ function isSupportedMediaPageUrl(url) {
   const host = parsed.hostname.toLowerCase();
   const path = parsed.pathname.toLowerCase();
 
+  if (isInstagramHost(host)) {
+    return Boolean(normalizeInstagramMediaUrl(safeUrl));
+  }
+
+  if (isInstagramCdnHost(host)) {
+    return MEDIA_URL_RE.test(parsed.href) || STREAM_URL_RE.test(parsed.href) || MEDIA_QUERY_RE.test(parsed.href);
+  }
+
   if (["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)) {
     return path === "/watch" && parsed.searchParams.has("v")
-      || path.startsWith("/shorts/");
+      || path.startsWith("/shorts/")
+      || path.startsWith("/live/")
+      || path.startsWith("/clip/");
   }
 
   if (host === "youtu.be") {
@@ -459,14 +671,18 @@ function isSupportedMediaPageUrl(url) {
     return true;
   }
 
-  if (["instagram.com", "www.instagram.com", "m.instagram.com"].includes(host)) {
-    return path.startsWith("/reel/")
-      || path.startsWith("/p/")
-      || path.startsWith("/tv/");
+  if (host === "video.twimg.com") {
+    return /\.(?:mp4|m3u8|m3u|mov|m4v)(?:$|[?#])/i.test(parsed.pathname)
+      || path.includes("/amplify_video/")
+      || path.includes("/ext_tw_video/")
+      || path.includes("/tweet_video/");
   }
 
   if (["x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(host)) {
-    return /\/[^/]+\/status\/\d+/i.test(path);
+    return /^\/(?:i\/web\/status\/\d+|[^/]+\/status\/\d+|statuses\/\d+)(?:\/(?:video|photo)\/\d+)?(?:$|\/)?/i.test(path)
+      || /^\/i\/(?:cards\/tfw\/v1|videos(?:\/tweet)?)\/\d+/i.test(path)
+      || path.startsWith("/i/broadcasts/")
+      || path.startsWith("/i/spaces/");
   }
 
   if (["soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com"].includes(host)) {
@@ -481,6 +697,28 @@ function chooseDownloadUrl(preferredUrl, details) {
   const preferredSafeUrl = getSafeHttpsUrl(preferredUrl);
   const pageSafeUrl = getSafeHttpsUrl(details.pageUrl);
   const pageUrl = pageSafeUrl || preferredSafeUrl;
+  const normalizedPageInstagramUrl = normalizeInstagramMediaUrl(pageSafeUrl);
+  const normalizedPreferredInstagramUrl = normalizeInstagramMediaUrl(preferredSafeUrl);
+
+  if (normalizedPageInstagramUrl || normalizedPreferredInstagramUrl) {
+    const instagramDirectCandidate = chooseInstagramDirectMediaCandidate(details.candidates);
+
+    if (instagramDirectCandidate) {
+      return instagramDirectCandidate.url;
+    }
+  }
+
+  if (normalizedPageInstagramUrl) {
+    if (details.preservePreferredUrl && normalizedPreferredInstagramUrl) {
+      return normalizedPreferredInstagramUrl;
+    }
+
+    return normalizedPageInstagramUrl;
+  }
+
+  if (normalizedPreferredInstagramUrl) {
+    return normalizedPreferredInstagramUrl;
+  }
 
   if (pageSafeUrl && isSupportedMediaPageUrl(pageSafeUrl)) {
     if (details.preservePreferredUrl && preferredSafeUrl && isSupportedMediaPageUrl(preferredSafeUrl)) {
@@ -517,6 +755,24 @@ function chooseDownloadUrl(preferredUrl, details) {
   return bestCandidate?.url || preferredSafeUrl || preferredUrl;
 }
 
+function chooseInstagramDirectMediaCandidate(candidates) {
+  return rankCandidates(candidates || []).find((candidate) =>
+    isUsableDirectMediaCandidate(candidate));
+}
+
+function isUsableDirectMediaCandidate(candidate) {
+  if (!candidate || candidate.type === "direct-audio") {
+    return false;
+  }
+
+  if (isInstagramCdnMediaUrl(candidate.url)) {
+    return getInstagramCdnMediaRole(candidate.url) !== "audio"
+      && !isInstagramByteRangeUrl(candidate.url);
+  }
+
+  return ["direct-mp4", "direct-webm", "direct-video"].includes(candidate.type);
+}
+
 function chooseFallbackMedia(candidates, primaryUrl, mediaPair) {
   const primarySafeUrl = getSafeHttpsUrl(primaryUrl);
 
@@ -525,14 +781,16 @@ function chooseFallbackMedia(candidates, primaryUrl, mediaPair) {
   }
 
   const bestDirect = rankCandidates(candidates || []).find((candidate) =>
-    ["direct-mp4", "direct-webm", "direct-video"].includes(candidate.type)
+    isUsableDirectMediaCandidate(candidate)
     && candidate.url !== primarySafeUrl);
 
   return bestDirect?.url || null;
 }
 
 function scanPageCandidates(tab, settings, callback) {
-  if (!tab?.id || !settings.experimentalAllSites || isSupportedPageUrl(tab.url)) {
+  const shouldScanSupportedPage = isInstagramPageUrl(tab?.url);
+
+  if (!tab?.id || (!settings.experimentalAllSites && !shouldScanSupportedPage) || (isSupportedPageUrl(tab.url) && !shouldScanSupportedPage)) {
     callback([]);
     return;
   }
@@ -542,7 +800,7 @@ function scanPageCandidates(tab, settings, callback) {
     {
       type: "dlp-scan-candidates",
       experimentalAllSites: true,
-      deepScanner: Boolean(settings.deepScanner)
+      deepScanner: Boolean(settings.deepScanner || shouldScanSupportedPage)
     },
     (response) => {
       if (chrome.runtime.lastError) {
@@ -555,8 +813,8 @@ function scanPageCandidates(tab, settings, callback) {
   );
 }
 
-function rememberNetworkCandidate(details, source = "network") {
-  if (details.tabId < 0 || !isLikelyMediaUrl(details.url)) {
+function rememberNetworkCandidate(details, source = "network", force = false) {
+  if (details.tabId < 0 || (!force && !isLikelyMediaUrl(details.url))) {
     return;
   }
 
@@ -576,7 +834,8 @@ function rememberNetworkCandidate(details, source = "network") {
 }
 
 function shouldRememberNetworkCandidate(details, settings) {
-  return Boolean(settings.experimentalAllSites)
+  return isInstagramCdnMediaUrl(details.url)
+    || Boolean(settings.experimentalAllSites)
     || Boolean(settings.streamOverlay)
     || isSupportedPageUrl(details.documentUrl)
     || isSupportedPageUrl(details.initiator);
@@ -1134,8 +1393,38 @@ if (chrome.webRequest?.onBeforeRequest) {
     },
     {
       urls: ["https://*/*"],
-      types: ["media", "xmlhttprequest", "other"]
+      types: MEDIA_REQUEST_TYPES
     }
+  );
+}
+
+if (chrome.webRequest?.onHeadersReceived) {
+  chrome.webRequest.onHeadersReceived.addListener(
+    (details) => {
+      if (!isLikelyMediaResponse(details)) {
+        return;
+      }
+
+      if (shouldRememberNetworkCandidate(details, settingsCache)) {
+        rememberNetworkCandidate(details, "network.headers", true);
+        return;
+      }
+
+      if (settingsCacheLoaded) {
+        return;
+      }
+
+      getSettings((settings) => {
+        if (shouldRememberNetworkCandidate(details, settings)) {
+          rememberNetworkCandidate(details, "network.headers", true);
+        }
+      });
+    },
+    {
+      urls: ["https://*/*"],
+      types: MEDIA_REQUEST_TYPES
+    },
+    ["responseHeaders"]
   );
 }
 
@@ -1168,7 +1457,7 @@ if (chrome.webRequest?.onBeforeRedirect) {
     },
     {
       urls: ["https://*/*"],
-      types: ["main_frame", "sub_frame", "media", "xmlhttprequest", "other"]
+      types: REDIRECT_REQUEST_TYPES
     }
   );
 }

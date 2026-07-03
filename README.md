@@ -253,8 +253,8 @@ Crypt folder access:
 - The folder is locked by default when DLP manages it
 - Crypt applies lock and unlock ACLs recursively to existing child files
 - Locked mode does not grant `Administrators` file read or folder listing access
-- The Downloads dashboard can unlock and open it temporarily
-- Active downloads receive temporary write access and relock afterward
+- The Downloads dashboard can unlock and open it until the user locks it again
+- Active downloads receive temporary write access and relock afterward unless the user unlocked the folder
 - DLP avoids explicit `Deny` rules so Windows recovery remains predictable
 - A Windows administrator can still take ownership or change permissions manually
 

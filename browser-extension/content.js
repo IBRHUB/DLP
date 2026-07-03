@@ -9,8 +9,10 @@
   const AUTO_HIDE_DELAY_MS = 2600;
   const STREAM_PANEL_HIDE_DELAY_MS = 4200;
   const DEEP_SCAN_WAIT_MS = 1600;
+  const INSTAGRAM_SCAN_WAIT_MS = 3500;
   const EXPERIMENTAL_POLL_MS = 120;
   const MAX_PAGE_STREAM_CANDIDATES = 50;
+  const MAX_INSTAGRAM_SCRIPT_SCAN_CHARS = 3000000;
   const MEDIA_URL_RE = /\.(m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[?#]|$)/i;
   const STREAM_URL_RE = /(?:playlist|manifest|master|index)\.(?:m3u8|m3u|mpd)(?:[?#]|$)/i;
   const MEDIA_QUERY_RE = /[?&](?:file|filename|name|src|url)=[^&#]+\.(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[&#]|$)/i;
@@ -352,11 +354,11 @@
       return "tiktok";
     }
 
-    if (["instagram.com", "www.instagram.com", "m.instagram.com"].includes(host)) {
+    if (isInstagramHost(host) || isInstagramCdnHost(host)) {
       return "instagram";
     }
 
-    if (["x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(host)) {
+    if (["x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com", "video.twimg.com"].includes(host)) {
       return "x";
     }
 
@@ -604,7 +606,18 @@
   function isXStatusUrl(url) {
     try {
       const parsed = new URL(url);
-      return /\/[^/]+\/status\/\d+/i.test(parsed.pathname);
+      const path = parsed.pathname.toLowerCase();
+      if (parsed.hostname.toLowerCase() === "video.twimg.com") {
+        return /\.(?:mp4|m3u8|m3u|mov|m4v)(?:$|[?#])/i.test(parsed.pathname)
+          || path.includes("/amplify_video/")
+          || path.includes("/ext_tw_video/")
+          || path.includes("/tweet_video/");
+      }
+
+      return /^\/(?:i\/web\/status\/\d+|[^/]+\/status\/\d+|statuses\/\d+)(?:\/(?:video|photo)\/\d+)?(?:$|\/)?/i.test(path)
+        || /^\/i\/(?:cards\/tfw\/v1|videos(?:\/tweet)?)\/\d+/i.test(path)
+        || path.startsWith("/i/broadcasts/")
+        || path.startsWith("/i/spaces/");
     } catch {
       return false;
     }
@@ -613,16 +626,172 @@
   function normalizeXStatusUrl(url) {
     try {
       const parsed = new URL(url);
-      const match = parsed.pathname.match(/^\/([^/]+)\/status\/(\d+)/i);
+      const host = parsed.hostname.toLowerCase();
+      const path = parsed.pathname;
 
-      if (!match) {
-        return null;
+      if (host === "video.twimg.com") {
+        return `${parsed.origin}${path}${parsed.search || ""}`;
       }
 
-      return `${parsed.origin}/${match[1]}/status/${match[2]}`;
+      const statusMatch = path.match(/^\/([^/]+)\/status\/(\d+)(\/(?:video|photo)\/\d+)?/i);
+
+      if (statusMatch) {
+        return `${parsed.origin}/${statusMatch[1]}/status/${statusMatch[2]}${statusMatch[3] || ""}`;
+      }
+
+      const statusesMatch = path.match(/^\/statuses\/(\d+)(\/(?:video|photo)\/\d+)?/i);
+
+      if (statusesMatch) {
+        return `${parsed.origin}/statuses/${statusesMatch[1]}${statusesMatch[2] || ""}`;
+      }
+
+      const systemPathMatch = path.match(/^\/i\/(?:web\/status|(?:cards\/tfw\/v1|videos(?:\/tweet)?))\/([^/?#]+)/i);
+
+      if (systemPathMatch) {
+        return `${parsed.origin}${path}`;
+      }
+
+      return path.toLowerCase().startsWith("/i/broadcasts/")
+        || path.toLowerCase().startsWith("/i/spaces/")
+        ? `${parsed.origin}${path}`
+        : null;
     } catch {
       return null;
     }
+  }
+
+  function isInstagramHost(host) {
+    return ["instagram.com", "www.instagram.com", "m.instagram.com"].includes(host);
+  }
+
+  function isInstagramCdnHost(host) {
+    return host === "cdninstagram.com"
+      || host.endsWith(".cdninstagram.com")
+      || (host.includes("instagram") && host.endsWith(".fbcdn.net"));
+  }
+
+  function normalizeInstagramMediaUrl(url) {
+    try {
+      const parsed = new URL(url, location.origin);
+      const host = parsed.hostname.toLowerCase();
+      const path = parsed.pathname;
+
+      if (parsed.protocol !== "https:") {
+        return null;
+      }
+
+      if (isInstagramCdnHost(host)) {
+        return isLikelyMediaUrl(parsed.href) ? parsed.href : null;
+      }
+
+      if (!isInstagramHost(host)) {
+        return null;
+      }
+
+      const postMatch = path.match(/^\/(?:(?!share\/)[^/]+\/)?(p|tv|reels?)\/([^/?#&]+)/i);
+
+      if (postMatch) {
+        const mediaType = postMatch[1].toLowerCase() === "reel"
+          ? "reels"
+          : postMatch[1].toLowerCase();
+        return `https://www.instagram.com/${mediaType}/${postMatch[2]}/`;
+      }
+
+      const storyMatch = path.match(/^\/stories\/(highlights\/\d+|[^/?#]+(?:\/\d+)?)/i);
+
+      if (storyMatch) {
+        return `https://www.instagram.com/stories/${storyMatch[1]}/`;
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
+  }
+
+  function isInstagramMediaUrl(url) {
+    return Boolean(normalizeInstagramMediaUrl(url));
+  }
+
+  function decodeEscapedMediaText(text) {
+    return String(text || "")
+      .replace(/\\u([0-9a-f]{4})/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
+      .replace(/\\x([0-9a-f]{2})/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
+      .replace(/\\\//g, "/")
+      .replace(/&amp;/gi, "&");
+  }
+
+  function cleanExtractedInstagramMediaUrl(rawUrl) {
+    try {
+      const cleaned = decodeEscapedMediaText(rawUrl)
+        .replace(/[),;\]}]+$/g, "");
+      const parsed = new URL(cleaned, location.href);
+      const host = parsed.hostname.toLowerCase();
+
+      if (parsed.protocol !== "https:" || (!isInstagramCdnHost(host) && !isInstagramHost(host))) {
+        return null;
+      }
+
+      return isLikelyMediaUrl(parsed.href) ? parsed.href : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function extractInstagramMediaUrlsFromText(text) {
+    if (!text || typeof text !== "string") {
+      return [];
+    }
+
+    const body = decodeEscapedMediaText(text);
+    const urlRe = /https:\/\/[^\s"'<>\\]+?\.(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[^\s"'<>\\]*)?/gi;
+    const urls = [];
+    const seen = new Set();
+
+    for (const match of body.matchAll(urlRe)) {
+      const url = cleanExtractedInstagramMediaUrl(match[0]);
+
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        urls.push(url);
+      }
+    }
+
+    return urls;
+  }
+
+  function getInstagramScriptMediaCandidates() {
+    const candidates = [];
+    const seen = new Set();
+    let remainingBudget = MAX_INSTAGRAM_SCRIPT_SCAN_CHARS;
+
+    for (const script of Array.from(document.scripts)) {
+      if (remainingBudget <= 0) {
+        break;
+      }
+
+      const text = script.textContent || "";
+
+      if (!text) {
+        continue;
+      }
+
+      const scanText = text.length > remainingBudget
+        ? text.slice(0, remainingBudget)
+        : text;
+      remainingBudget -= scanText.length;
+
+      for (const url of extractInstagramMediaUrlsFromText(scanText)) {
+        if (seen.has(url)) {
+          continue;
+        }
+
+        seen.add(url);
+        candidates.push(createExperimentalCandidate(url, "instagram.script"));
+      }
+    }
+
+    return candidates;
   }
 
   function findFirstMatchingLink(container, predicate) {
@@ -746,7 +915,9 @@
         return new URLSearchParams(location.search).has("v");
       }
 
-      return isYouTubeShortsPage();
+      return isYouTubeShortsPage()
+        || location.pathname.startsWith("/live/")
+        || location.pathname.startsWith("/clip/");
     }
 
     if (platform === "tiktok") {
@@ -759,15 +930,11 @@
     }
 
     if (platform === "instagram") {
-      const path = location.pathname.toLowerCase();
-
-      return path.startsWith("/reel/")
-        || path.startsWith("/p/")
-        || path.startsWith("/tv/");
+      return Boolean(getInstagramMediaUrl());
     }
 
     if (platform === "x") {
-      return location.pathname.toLowerCase().includes("/status/")
+      return isXStatusUrl(location.href)
         || Boolean(getXStatusUrl());
     }
 
@@ -794,6 +961,10 @@
 
     if (platform === "x") {
       return getXStatusUrl() || location.href;
+    }
+
+    if (platform === "instagram") {
+      return getInstagramMediaUrl() || location.href;
     }
 
     if (!platform && settings.experimentalAllSites) {
@@ -842,14 +1013,20 @@
 
   function getExperimentalCandidates(deepScan) {
     const candidates = [];
-    const video = getVisibleVideo();
+    const platform = getPlatform();
+    const isInstagramPage = platform === "instagram";
+    const visibleVideo = getVisibleVideo();
+    const videos = isInstagramPage
+      ? Array.from(document.querySelectorAll("video"))
+      : [visibleVideo].filter(Boolean);
 
-    if (video) {
+    for (const video of videos) {
+      const sourcePrefix = isInstagramPage && video !== visibleVideo ? "instagram.video" : "video";
       candidates.push(
-        createExperimentalCandidate(video.currentSrc, "video.currentSrc"),
-        createExperimentalCandidate(video.src, "video.src"),
+        createExperimentalCandidate(video.currentSrc, `${sourcePrefix}.currentSrc`),
+        createExperimentalCandidate(video.src, `${sourcePrefix}.src`),
         ...Array.from(video.querySelectorAll("source[src]"), (source) =>
-          createExperimentalCandidate(source.src, "source.src"))
+          createExperimentalCandidate(source.src, `${sourcePrefix}.source`))
       );
     }
 
@@ -860,10 +1037,17 @@
       createExperimentalCandidate(getMetaContent('meta[name="twitter:player:stream"]'), "meta.twitter:player:stream")
     );
 
-    if (deepScan) {
+    if (isInstagramPage) {
+      candidates.push(...getInstagramScriptMediaCandidates());
+    }
+
+    if (deepScan || isInstagramPage) {
       for (const entry of performance.getEntriesByType("resource")) {
         if (isLikelyMediaUrl(entry.name)) {
-          candidates.push(createExperimentalCandidate(entry.name, "performance", performance.timeOrigin + entry.startTime));
+          candidates.push(createExperimentalCandidate(
+            entry.name,
+            isInstagramPage ? "instagram.performance" : "performance",
+            performance.timeOrigin + entry.startTime));
         }
       }
     }
@@ -1001,9 +1185,82 @@
     return "";
   }
 
+  function decodeInstagramBase64Value(value) {
+    if (!value) {
+      return "";
+    }
+
+    try {
+      const normalized = String(value)
+        .replace(/-/g, "+")
+        .replace(/_/g, "/");
+      const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+      return atob(padded);
+    } catch {
+      return "";
+    }
+  }
+
+  function getInstagramCdnSignalText(parsedUrl) {
+    const efg = decodeInstagramBase64Value(parsedUrl.searchParams.get("efg"));
+    const ncVs = decodeInstagramBase64Value(parsedUrl.searchParams.get("_nc_vs"));
+
+    return `${parsedUrl.pathname} ${parsedUrl.search} ${efg} ${ncVs}`.toLowerCase();
+  }
+
+  function isInstagramByteRangeUrl(url) {
+    try {
+      const parsed = new URL(url, location.href);
+      return parsed.searchParams.has("bytestart") || parsed.searchParams.has("byteend");
+    } catch {
+      return false;
+    }
+  }
+
+  function getInstagramCdnMediaRole(url) {
+    try {
+      const parsed = new URL(url, location.href);
+
+      if (!isInstagramCdnHost(parsed.hostname.toLowerCase())) {
+        return "unknown";
+      }
+
+      const efgText = decodeInstagramBase64Value(parsed.searchParams.get("efg")).toLowerCase();
+      const signalText = getInstagramCdnSignalText(parsed);
+      const audioRe = /(?:^|[._/-])(?:audio|heaac|mp4a|aac|opus|dash_audio|audio_dashinit)(?:[._/-]|$)/;
+      const videoRe = /(?:^|[._/-])(?:video|progressive|dash_baseline|avc|h264|h265|vp9|av01|vencode)(?:[._/-]|$)|(?:^|[._/-])(?:144|240|360|480|576|720|1080|1440|2160)(?:[._/-]|$)/;
+
+      if (audioRe.test(efgText)) {
+        return "audio";
+      }
+
+      if (videoRe.test(efgText)) {
+        return "video";
+      }
+
+      if (audioRe.test(signalText) && !videoRe.test(signalText)) {
+        return "audio";
+      }
+
+      if (videoRe.test(signalText)) {
+        return "video";
+      }
+    } catch {
+      return "unknown";
+    }
+
+    return "unknown";
+  }
+
   function getMediaRole(url) {
     try {
       const parsed = new URL(url);
+      const instagramRole = getInstagramCdnMediaRole(url);
+
+      if (instagramRole !== "unknown") {
+        return instagramRole;
+      }
+
       const path = decodeURIComponent(parsed.pathname).toLowerCase();
       const query = decodeURIComponent(parsed.search).toLowerCase();
       const queryFileName = getQueryMediaFileName(parsed);
@@ -1058,6 +1315,24 @@
         score -= 80;
       }
 
+      if (isInstagramByteRangeUrl(url)) {
+        score -= 500;
+      }
+
+      if (isInstagramCdnHost(parsed.hostname.toLowerCase())) {
+        const role = getInstagramCdnMediaRole(url);
+
+        if (role === "video") {
+          score += 260;
+        } else if (role === "audio") {
+          score -= 650;
+        }
+
+        if (!isInstagramByteRangeUrl(url)) {
+          score += 120;
+        }
+      }
+
       return score;
     } catch {
       return 0;
@@ -1083,10 +1358,16 @@
       score += 60;
     }
 
-    if (candidate.source === "video.currentSrc") {
+    if (String(candidate.source).startsWith("instagram.video.")) {
+      score += 150;
+    } else if (candidate.source === "video.currentSrc") {
       score += 140;
     } else if (candidate.source === "video.src" || candidate.source === "source.src") {
       score += 100;
+    } else if (candidate.source === "instagram.performance") {
+      score += 55;
+    } else if (candidate.source === "instagram.script") {
+      score += 45;
     } else if (candidate.source === "performance") {
       score += 16;
     } else if (String(candidate.source).startsWith("meta.")) {
@@ -1121,7 +1402,10 @@
   }
 
   function shouldWaitForExperimentalCandidates(forceExperimental, forceDeepScan) {
-    return Boolean(!getPlatform() && (forceExperimental || settings.experimentalAllSites) && (forceDeepScan || settings.deepScanner));
+    return Boolean(getPlatform() === "instagram"
+      || (!getPlatform()
+        && (forceExperimental || settings.experimentalAllSites)
+        && (forceDeepScan || settings.deepScanner)));
   }
 
   function hasReadyExperimentalCandidate(candidates) {
@@ -1130,25 +1414,32 @@
       && (candidate.source === "video.currentSrc"
         || candidate.source === "video.src"
         || candidate.source === "source.src"
+        || String(candidate.source).startsWith("instagram.video.")
+        || candidate.source === "instagram.performance"
+        || candidate.source === "instagram.script"
         || isLikelyMediaUrl(candidate.url)));
   }
 
   function waitForExperimentalCandidates(callback, forceExperimental, forceDeepScan) {
+    const platform = getPlatform();
     const deepScan = Boolean(forceDeepScan || settings.deepScanner);
 
     if (!shouldWaitForExperimentalCandidates(forceExperimental, forceDeepScan)) {
-      callback(!getPlatform() && (forceExperimental || settings.experimentalAllSites)
+      callback(platform === "instagram"
+        ? getExperimentalCandidates(false)
+        : !platform && (forceExperimental || settings.experimentalAllSites)
         ? getExperimentalCandidates(false)
         : []);
       return;
     }
 
     const startedAt = Date.now();
+    const waitMs = platform === "instagram" ? INSTAGRAM_SCAN_WAIT_MS : DEEP_SCAN_WAIT_MS;
 
     const poll = () => {
       const candidates = getExperimentalCandidates(deepScan);
 
-      if (hasReadyExperimentalCandidate(candidates) || Date.now() - startedAt >= DEEP_SCAN_WAIT_MS) {
+      if (hasReadyExperimentalCandidate(candidates) || Date.now() - startedAt >= waitMs) {
         callback(candidates);
         return;
       }
@@ -1304,6 +1595,32 @@
 
   function getInstagramPlayerElement() {
     return getVisibleVideo();
+  }
+
+  function getInstagramMediaUrl() {
+    const currentUrl = normalizeInstagramMediaUrl(location.href);
+
+    if (currentUrl) {
+      return currentUrl;
+    }
+
+    const canonicalUrl = normalizeInstagramMediaUrl(
+      document.querySelector('link[rel="canonical"]')?.href
+        || getMetaContent('meta[property="og:url"]')
+        || getMetaContent('meta[name="twitter:url"]'));
+
+    if (canonicalUrl) {
+      return canonicalUrl;
+    }
+
+    const video = getVisibleVideo();
+    const container = video?.closest("article")
+      || video?.closest('[role="dialog"]')
+      || video?.closest("main")
+      || document;
+    const linkedUrl = findFirstMatchingLink(container, isInstagramMediaUrl);
+
+    return linkedUrl ? normalizeInstagramMediaUrl(linkedUrl) : null;
   }
 
   function getXPlayerElement() {
@@ -2784,10 +3101,10 @@
       const experimental = Boolean(settings.experimentalAllSites || message.experimentalAllSites);
       const deepScan = Boolean(settings.deepScanner || message.deepScanner);
 
-      if (!getPlatform() && experimental) {
+      if (getPlatform() === "instagram" || (!getPlatform() && experimental)) {
         waitForExperimentalCandidates((candidates) => {
           sendResponse({
-            url: candidates[0]?.url || location.href,
+            url: getPlatform() === "instagram" ? getDownloadUrl() : candidates[0]?.url || location.href,
             title: getMediaTitle(),
             candidates
           });

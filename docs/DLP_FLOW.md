@@ -334,12 +334,12 @@ browser process
                │ dashboard unlock
                ▼
 ┌──────────────────────────────┐
-│ Current user: temporary      │
+│ Current user: persistent     │
 │ modify/read access           │
-│ default duration: 10 minutes │
+│ until explicit lock          │
 └──────────────┬───────────────┘
                │
-               │ lock now / expiry / download end
+               │ lock now / download end
                ▼
 ┌──────────────────────────────┐
 │ Folder returns to locked     │

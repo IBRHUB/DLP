@@ -47,14 +47,11 @@ internal sealed class CryptAccessScope : IDisposable
 internal static class Crypt
 {
     private const string MutexName = @"Local\DLP_CryptAcl";
-    private const int DefaultUnlockMinutes = 10;
     private static readonly TimeSpan StaleOperationAge = TimeSpan.FromHours(6);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
     };
-
-    public static TimeSpan DefaultUnlockDuration => TimeSpan.FromMinutes(DefaultUnlockMinutes);
 
     public static CryptStatus GetStatus()
     {
@@ -88,19 +85,18 @@ internal static class Crypt
         }
     }
 
-    public static CryptStatus UnlockForCurrentUser(TimeSpan duration)
+    public static CryptStatus UnlockForCurrentUser()
     {
         try
         {
             return WithAclLock(() =>
             {
                 string directoryPath = EnsureManagedDirectory();
-                DateTimeOffset unlockedUntilUtc = DateTimeOffset.UtcNow.Add(duration);
 
-                WriteState(new AccessState(unlockedUntilUtc));
+                WriteState(AccessState.Unlocked());
                 ApplyUnlockedAcl(directoryPath, CryptAccessMode.Modify);
                 SetUnlockedAttributes(directoryPath);
-                Program.Log($"DLP download folder unlocked until {unlockedUntilUtc:O}: {directoryPath}");
+                Program.Log($"DLP download folder unlocked: {directoryPath}");
 
                 return ReadStatus(directoryPath, ReadState(), HasActiveOperations());
             });
@@ -119,6 +115,7 @@ internal static class Crypt
             return WithAclLock(() =>
             {
                 string directoryPath = EnsureManagedDirectory();
+                ClearState();
 
                 if (HasActiveOperations())
                 {
@@ -129,7 +126,6 @@ internal static class Crypt
                         messageOverride: "A download is still using the folder");
                 }
 
-                ClearState();
                 ApplyLockedAcl(directoryPath);
                 SetLockedAttributes(directoryPath);
                 Program.Log($"DLP download folder locked: {directoryPath}");
@@ -241,7 +237,7 @@ internal static class Crypt
         string stateName = isUnlocked ? "unlocked" : "locked";
         string message = messageOverride
             ?? (isUnlocked
-                ? BuildUnlockedMessage(state, hasActiveOperations)
+                ? BuildUnlockedMessage(hasActiveOperations)
                 : "Folder is locked");
 
         return new CryptStatus(
@@ -253,19 +249,14 @@ internal static class Crypt
             State: stateName,
             Message: message,
             Directory: directoryPath,
-            UnlockedUntilUtc: state.UnlockedUntilUtc);
+            UnlockedUntilUtc: null);
     }
 
-    private static string BuildUnlockedMessage(AccessState state, bool hasActiveOperations)
+    private static string BuildUnlockedMessage(bool hasActiveOperations)
     {
         if (hasActiveOperations)
         {
             return "Folder is unlocked for an active DLP operation";
-        }
-
-        if (state.UnlockedUntilUtc is { } untilUtc)
-        {
-            return $"Folder is unlocked until {untilUtc.LocalDateTime:t}";
         }
 
         return "Folder is unlocked";
@@ -665,15 +656,30 @@ internal static class Crypt
         {
             if (!File.Exists(StatePath))
             {
-                return new AccessState(null);
+                return AccessState.Locked();
             }
 
-            return JsonSerializer.Deserialize<AccessState>(File.ReadAllText(StatePath), JsonOptions)
-                ?? new AccessState(null);
+            AccessState state = JsonSerializer.Deserialize<AccessState>(File.ReadAllText(StatePath), JsonOptions)
+                ?? AccessState.Locked();
+
+            if (state.IsUnlocked)
+            {
+                return AccessState.Unlocked();
+            }
+
+            if (state.UnlockedUntilUtc is { } unlockedUntilUtc
+                && unlockedUntilUtc > DateTimeOffset.UtcNow)
+            {
+                AccessState migratedState = AccessState.Unlocked();
+                WriteState(migratedState);
+                return migratedState;
+            }
+
+            return AccessState.Locked();
         }
         catch
         {
-            return new AccessState(null);
+            return AccessState.Locked();
         }
     }
 
@@ -693,8 +699,7 @@ internal static class Crypt
 
     private static bool IsUserUnlockActive(AccessState state)
     {
-        return state.UnlockedUntilUtc is { } unlockedUntilUtc
-            && unlockedUntilUtc > DateTimeOffset.UtcNow;
+        return state.IsUnlocked;
     }
 
     private static void SetLockedAttributes(string directoryPath)
@@ -783,7 +788,19 @@ internal static class Crypt
 
     private static string GetOperationPath(string operationId) => Path.Combine(OperationDirectory, $"{operationId}.json");
 
-    private sealed record AccessState(DateTimeOffset? UnlockedUntilUtc);
+    private sealed class AccessState
+    {
+        public bool IsUnlocked { get; init; }
+
+        public DateTimeOffset? UnlockedUntilUtc { get; init; }
+
+        public static AccessState Locked() => new();
+
+        public static AccessState Unlocked() => new()
+        {
+            IsUnlocked = true
+        };
+    }
 
     private sealed record OperationState(DateTimeOffset CreatedUtc, string Reason, string Mode);
 }

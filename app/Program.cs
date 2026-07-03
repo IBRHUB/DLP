@@ -175,8 +175,7 @@ internal static class Program
 
     public static void OpenDownloadFolder()
     {
-        CryptStatus access = Crypt.UnlockForCurrentUser(
-            Crypt.DefaultUnlockDuration);
+        CryptStatus access = Crypt.UnlockForCurrentUser();
         string downloadDirectory = access.Directory;
 
         Process.Start(new ProcessStartInfo
@@ -192,7 +191,7 @@ internal static class Program
     {
         try
         {
-            Crypt.UnlockForCurrentUser(Crypt.DefaultUnlockDuration);
+            Crypt.UnlockForCurrentUser();
             string downloadDirectory = Path.GetFullPath(GetDownloadDirectory());
             string filePath = Path.GetFullPath(Path.Combine(downloadDirectory, fileName));
             string directoryPrefix = downloadDirectory.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
@@ -477,40 +476,6 @@ internal static class NativeMessagingHost
         ".flac",
         ".aac"
     ];
-    private static readonly string[] DirectMediaFallbackExtensions =
-    [
-        ".mp4",
-        ".webm",
-        ".m4v",
-        ".mov"
-    ];
-
-    private static readonly string[] AllowedHosts =
-    [
-        "youtube.com",
-        "www.youtube.com",
-        "m.youtube.com",
-        "youtu.be",
-        "tiktok.com",
-        "www.tiktok.com",
-        "m.tiktok.com",
-        "vm.tiktok.com",
-        "vt.tiktok.com",
-        "instagram.com",
-        "www.instagram.com",
-        "m.instagram.com",
-        "x.com",
-        "www.x.com",
-        "mobile.x.com",
-        "twitter.com",
-        "www.twitter.com",
-        "mobile.twitter.com",
-        "soundcloud.com",
-        "www.soundcloud.com",
-        "m.soundcloud.com",
-        "on.soundcloud.com"
-    ];
-
     public static bool IsNativeMessagingInvocation()
     {
         try
@@ -819,8 +784,7 @@ internal static class NativeMessagingHost
     private static object HandleUnlockDownloadFolder(JsonElement root)
     {
         bool open = ReadBoolean(root, "open", defaultValue: false);
-        CryptStatus folderAccess = Crypt.UnlockForCurrentUser(
-            Crypt.DefaultUnlockDuration);
+        CryptStatus folderAccess = Crypt.UnlockForCurrentUser();
 
         if (open && folderAccess.IsSupported)
         {
@@ -897,7 +861,7 @@ internal static class NativeMessagingHost
     private static object HandleOpenDownload(JsonElement root)
     {
         string fileName = ReadString(root, "fileName", required: true)!;
-        Crypt.UnlockForCurrentUser(Crypt.DefaultUnlockDuration);
+        Crypt.UnlockForCurrentUser();
         string filePath = ResolveDownloadedMediaPath(fileName);
         string appPath = ResolveCurrentAppPath();
 
@@ -976,8 +940,7 @@ internal static class NativeMessagingHost
             throw new NativeHostException("invalid_scheme", "Only HTTPS URLs are allowed");
         }
 
-        bool hostAllowed = AllowedHosts.Any(host =>
-            string.Equals(uri.Host, host, StringComparison.OrdinalIgnoreCase));
+        bool hostAllowed = YtDlpSites.IsAllowedHost(uri);
 
         if (!hostAllowed && !experimental)
         {
@@ -1103,21 +1066,12 @@ internal static class NativeMessagingHost
             throw new NativeHostException("host_not_allowed", "Captured fallback URLs require a supported media page");
         }
 
-        if (!LooksLikeDirectMediaUrl(uri))
+        if (!YtDlpSites.LooksLikeDirectMediaUrl(uri))
         {
             throw new NativeHostException("invalid_url", "Captured fallback URL must be a direct media URL");
         }
 
         return uri.AbsoluteUri;
-    }
-
-    private static bool LooksLikeDirectMediaUrl(Uri uri)
-    {
-        string path = Uri.UnescapeDataString(uri.AbsolutePath);
-        string extension = Path.GetExtension(path);
-
-        return DirectMediaFallbackExtensions.Any(mediaExtension =>
-            string.Equals(extension, mediaExtension, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string? FirstNonWhiteSpace(params string?[] values)
@@ -1565,7 +1519,7 @@ internal static class SilentDownloader
         }
 
         if (string.IsNullOrWhiteSpace(audioUrl)
-            && !YtDlpPlatformPolicy.ShouldPreferYtDlp(url, referer)
+            && (!YtDlpPlatformPolicy.ShouldPreferYtDlp(url, referer) || Instagram.IsDirectMediaUrl(url))
             && BuiltInMediaDownloader.CanDownload(url, null))
         {
             try
@@ -1592,6 +1546,40 @@ internal static class SilentDownloader
             catch (Exception ex)
             {
                 Program.Log($"Silent built-in media download failed before yt-dlp: {ex.Message}");
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(audioUrl)
+            && fallbackUrl is not null
+            && string.Equals(YtDlpSites.DetectPlatform(url, referer), Instagram.DisplayName, StringComparison.Ordinal)
+            && BuiltInMediaDownloader.CanDownload(fallbackUrl, null))
+        {
+            try
+            {
+                Program.Log($"Trying captured Instagram media before yt-dlp: {fallbackUrl}");
+                bool capturedDirectOk = await BuiltInMediaDownloader.DownloadAsync(
+                    fallbackUrl,
+                    null,
+                    downloadDirectory,
+                    title,
+                    referer,
+                    userAgent,
+                    ffmpegPath,
+                    createDuplicateCopy: false,
+                    Program.Log,
+                    null,
+                    null);
+
+                if (capturedDirectOk)
+                {
+                    return 0;
+                }
+
+                Program.Log("Captured Instagram media failed before yt-dlp; continuing with yt-dlp attempts.");
+            }
+            catch (Exception ex)
+            {
+                Program.Log($"Captured Instagram media failed before yt-dlp: {ex.Message}");
             }
         }
 
@@ -1664,54 +1652,73 @@ internal static class SilentDownloader
             }
         }
 
-        ProcessStartInfo startInfo = new()
-        {
-            FileName = ytDlpPath,
-            WorkingDirectory = downloadDirectory,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
-
-        AddCommonArguments(startInfo, downloadDirectory, ffmpegPath, referer, userAgent, cookieBrowser, url);
-        startInfo.ArgumentList.Add("-f");
-        startInfo.ArgumentList.Add("bv*+ba/b");
-        startInfo.ArgumentList.Add("--merge-output-format");
-        startInfo.ArgumentList.Add("mp4");
-        startInfo.ArgumentList.Add(url);
-
-        using Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
-        YtDlpRunDiagnostics diagnostics = new(
+        IReadOnlyList<YtDlpDownloadAttempt> attempts = YtDlpSites.GetDownloadAttempts(
             url,
             referer,
-            userAgent,
-            cookieBrowser,
-            fallbackUrl);
+            cookieBrowser);
+        int lastExitCode = 1;
 
-        diagnostics.LogStart(ytDlpPath, Program.Log, startInfo);
-        process.OutputDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
-        process.ErrorDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
-
-        try
+        for (int attemptIndex = 0; attemptIndex < attempts.Count; attemptIndex++)
         {
-            process.Start();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-
-            await process.WaitForExitAsync();
-            process.WaitForExit();
-
-            if (process.ExitCode == 0)
+            YtDlpDownloadAttempt attempt = attempts[attemptIndex];
+            string? attemptCookieBrowser = attempt.SuppressCookies ? null : cookieBrowser;
+            ProcessStartInfo startInfo = new()
             {
-                Program.Log("Silent video download completed");
-            }
-            else
+                FileName = ytDlpPath,
+                WorkingDirectory = downloadDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            AddCommonArguments(startInfo, downloadDirectory, ffmpegPath, referer, userAgent, attemptCookieBrowser, attempt, url);
+            startInfo.ArgumentList.Add("-f");
+            startInfo.ArgumentList.Add(attempt.GetVideoFormatSelector("bv*+ba/b"));
+            startInfo.ArgumentList.Add("--merge-output-format");
+            startInfo.ArgumentList.Add("mp4");
+            attempt.AddTo(startInfo);
+            startInfo.ArgumentList.Add(url);
+
+            using Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
+            YtDlpRunDiagnostics diagnostics = new(
+                url,
+                referer,
+                userAgent,
+                attemptCookieBrowser,
+                fallbackUrl);
+
+            Program.Log($"yt-dlp attempt {attemptIndex + 1}/{attempts.Count}: {attempt.Name}");
+            diagnostics.LogStart(ytDlpPath, Program.Log, startInfo);
+            process.OutputDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
+            process.ErrorDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
+
+            try
             {
+                process.Start();
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+
+                await process.WaitForExitAsync();
+                process.WaitForExit();
+
+                if (process.ExitCode == 0)
+                {
+                    Program.Log("Silent video download completed");
+                    return 0;
+                }
+
+                lastExitCode = process.ExitCode;
                 Program.Log($"Silent video download failed with exit code {process.ExitCode}");
                 diagnostics.LogFailure(process.ExitCode, Program.Log);
+
+                if (attemptIndex < attempts.Count - 1)
+                {
+                    Program.Log($"Retrying yt-dlp with attempt: {attempts[attemptIndex + 1].Name}");
+                    continue;
+                }
 
                 if (fallbackUrl is not null && BuiltInMediaDownloader.CanDownload(fallbackUrl, null))
                 {
@@ -1752,15 +1759,23 @@ internal static class SilentDownloader
                 }
 
                 Program.Log($"Built-in media fallback unavailable for silent URL: {url}");
+                return process.ExitCode;
             }
+            catch (Exception ex)
+            {
+                Program.Log($"Silent download start failed: {ex}");
 
-            return process.ExitCode;
+                if (attemptIndex < attempts.Count - 1)
+                {
+                    Program.Log($"Retrying yt-dlp with attempt: {attempts[attemptIndex + 1].Name}");
+                    continue;
+                }
+
+                return 1;
+            }
         }
-        catch (Exception ex)
-        {
-            Program.Log($"Silent download start failed: {ex}");
-            return 1;
-        }
+
+        return lastExitCode;
     }
 
     private static void AddCommonArguments(
@@ -1770,10 +1785,14 @@ internal static class SilentDownloader
         string? referer,
         string? userAgent,
         string? cookieBrowser,
+        YtDlpDownloadAttempt? attempt,
         string url)
     {
         startInfo.ArgumentList.Add("--newline");
-        startInfo.ArgumentList.Add("--no-playlist");
+        if (attempt?.AllowPlaylist != true)
+        {
+            startInfo.ArgumentList.Add("--no-playlist");
+        }
         startInfo.ArgumentList.Add("--no-mtime");
         startInfo.ArgumentList.Add("--windows-filenames");
         YtDlpNetworkArgumentBuilder.AddNetworkArguments(startInfo, referer, userAgent);
@@ -2558,7 +2577,7 @@ internal sealed class YtDlpRunDiagnostics
         string version = GetYtDlpVersion(ytDlpPath);
         log("yt-dlp context: "
             + $"version={version} "
-            + $"platform={DetectPlatform(_url, _referer)} "
+            + $"platform={YtDlpSites.DetectPlatform(_url, _referer)} "
             + $"url=\"{EscapeForLog(Shorten(_url, 700))}\" "
             + $"urlHost={GetHost(_url)} "
             + $"referer=\"{EscapeForLog(Shorten(_referer ?? "none", 700))}\" "
@@ -2609,7 +2628,7 @@ internal sealed class YtDlpRunDiagnostics
         log("yt-dlp failure summary: "
             + $"exitCode={exitCode} "
             + $"reason={reason} "
-            + $"platform={DetectPlatform(_url, _referer)} "
+            + $"platform={YtDlpSites.DetectPlatform(_url, _referer)} "
             + $"urlHost={GetHost(_url)} "
             + $"refererHost={GetHost(_referer)} "
             + $"browserCookies={_cookieBrowser ?? "none"} "
@@ -2633,73 +2652,9 @@ internal sealed class YtDlpRunDiagnostics
         string message = errors.LastOrDefault() ?? "No explicit yt-dlp ERROR line was captured.";
         string warning = warnings.LastOrDefault() ?? "";
         string combined = string.Join(" ", errors.Concat(warnings)).ToLowerInvariant();
-        string reason = ClassifyReason(combined);
+        string reason = YtDlpSites.ClassifyFailure(combined);
 
         return (reason, Shorten(CleanErrorPrefix(message), 900), Shorten(CleanWarningPrefix(warning), 500));
-    }
-
-    private static string ClassifyReason(string text)
-    {
-        if (text.Contains("this content isn't available to everyone", StringComparison.Ordinal))
-        {
-            return "instagram_restricted_audience";
-        }
-
-        if (text.Contains("instagram sent an empty media response", StringComparison.Ordinal))
-        {
-            return "instagram_empty_media_response";
-        }
-
-        if (text.Contains("no csrf token set by instagram api", StringComparison.Ordinal))
-        {
-            return "instagram_missing_csrf_token";
-        }
-
-        if (text.Contains("requiring login", StringComparison.Ordinal)
-            || text.Contains("requires login", StringComparison.Ordinal)
-            || text.Contains("login for access", StringComparison.Ordinal)
-            || text.Contains("sign in to confirm", StringComparison.Ordinal)
-            || text.Contains("use --cookies-from-browser", StringComparison.Ordinal))
-        {
-            return "login_required";
-        }
-
-        if (text.Contains("could not copy chrome cookie database", StringComparison.Ordinal))
-        {
-            return "browser_cookie_database_locked";
-        }
-
-        if (text.Contains("no video could be found in this tweet", StringComparison.Ordinal))
-        {
-            return "twitter_no_video";
-        }
-
-        if (text.Contains("unsupported url", StringComparison.Ordinal))
-        {
-            return "unsupported_url";
-        }
-
-        if (text.Contains("private", StringComparison.Ordinal))
-        {
-            return "private_content";
-        }
-
-        if (text.Contains("403", StringComparison.Ordinal) || text.Contains("forbidden", StringComparison.Ordinal))
-        {
-            return "http_forbidden";
-        }
-
-        if (text.Contains("404", StringComparison.Ordinal) || text.Contains("not found", StringComparison.Ordinal))
-        {
-            return "http_not_found";
-        }
-
-        if (text.Contains("not available", StringComparison.Ordinal))
-        {
-            return "content_unavailable";
-        }
-
-        return "unknown_yt_dlp_failure";
     }
 
     private static string GetYtDlpVersion(string ytDlpPath)
@@ -2806,38 +2761,11 @@ internal sealed class YtDlpRunDiagnostics
             "\"" + EscapeForLog(Shorten(argument, 700)) + "\""));
     }
 
-    private static string DetectPlatform(string? url, string? referer)
-    {
-        string host = GetHost(url);
-
-        if (host == "unknown")
-        {
-            host = GetHost(referer);
-        }
-
-        return host switch
-        {
-            string value when IsHostInGroup(value, "instagram.com") => "Instagram",
-            string value when IsHostInGroup(value, "x.com", "twitter.com") => "Twitter/X",
-            string value when IsHostInGroup(value, "tiktok.com", "vm.tiktok.com", "vt.tiktok.com") => "TikTok",
-            string value when IsHostInGroup(value, "youtube.com", "youtu.be") => "YouTube",
-            string value when IsHostInGroup(value, "soundcloud.com", "on.soundcloud.com") => "SoundCloud",
-            _ => "unknown"
-        };
-    }
-
     private static string GetHost(string? url)
     {
         return Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)
             ? uri.Host.ToLowerInvariant()
             : "unknown";
-    }
-
-    private static bool IsHostInGroup(string host, params string[] domains)
-    {
-        return domains.Any(domain =>
-            string.Equals(host, domain, StringComparison.OrdinalIgnoreCase)
-            || host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string CleanErrorPrefix(string message)
@@ -2860,92 +2788,6 @@ internal sealed class YtDlpRunDiagnostics
     private static string Shorten(string value, int maxLength)
     {
         return value.Length <= maxLength ? value : value[..maxLength].Trim() + " ...";
-    }
-}
-
-internal static class YtDlpPlatformPolicy
-{
-    public static bool ShouldPreferYtDlp(string url, string? referer)
-    {
-        return IsSupportedMediaPageUrl(url) || IsSupportedMediaPageUrl(referer);
-    }
-
-    private static bool IsSupportedMediaPageUrl(string? url)
-    {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)
-            || !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        string host = uri.Host.ToLowerInvariant();
-        string path = uri.AbsolutePath.ToLowerInvariant();
-
-        if (host is "youtube.com" or "www.youtube.com" or "m.youtube.com")
-        {
-            return (path == "/watch" && HasQueryParameter(uri, "v"))
-                || path.StartsWith("/shorts/", StringComparison.Ordinal);
-        }
-
-        if (host == "youtu.be")
-        {
-            return path.Length > 1;
-        }
-
-        if (host is "tiktok.com" or "www.tiktok.com" or "m.tiktok.com")
-        {
-            return Regex.IsMatch(path, @"/@[^/]+/video/\d+", RegexOptions.IgnoreCase);
-        }
-
-        if (host is "vm.tiktok.com" or "vt.tiktok.com")
-        {
-            return true;
-        }
-
-        if (host is "instagram.com" or "www.instagram.com" or "m.instagram.com")
-        {
-            return path.StartsWith("/reel/", StringComparison.Ordinal)
-                || path.StartsWith("/p/", StringComparison.Ordinal)
-                || path.StartsWith("/tv/", StringComparison.Ordinal);
-        }
-
-        if (host is "x.com" or "www.x.com" or "mobile.x.com" or "twitter.com" or "www.twitter.com" or "mobile.twitter.com")
-        {
-            return Regex.IsMatch(path, @"/[^/]+/status/\d+", RegexOptions.IgnoreCase);
-        }
-
-        if (host is "soundcloud.com" or "www.soundcloud.com" or "m.soundcloud.com" or "on.soundcloud.com")
-        {
-            string[] ignoredPaths = ["/", "/discover", "/stream", "/you", "/upload", "/search"];
-            return !ignoredPaths.Any(ignoredPath =>
-                string.Equals(path, ignoredPath, StringComparison.Ordinal)
-                || path.StartsWith(ignoredPath + "/", StringComparison.Ordinal));
-        }
-
-        return false;
-    }
-
-    private static bool HasQueryParameter(Uri uri, string name)
-    {
-        string query = uri.Query;
-
-        if (query.StartsWith("?", StringComparison.Ordinal))
-        {
-            query = query[1..];
-        }
-
-        foreach (string part in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
-        {
-            int separatorIndex = part.IndexOf('=', StringComparison.Ordinal);
-            string key = separatorIndex >= 0 ? part[..separatorIndex] : part;
-
-            if (string.Equals(Uri.UnescapeDataString(key), name, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 }
 
@@ -2985,10 +2827,14 @@ internal static class YtDlpCookieArgumentBuilder
 
 internal static class YtDlpArgumentBuilder
 {
-    public static void AddVideoArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options, string url)
+    public static void AddVideoArguments(
+        ProcessStartInfo startInfo,
+        YtDlpDownloadOptions options,
+        string url,
+        YtDlpDownloadAttempt? attempt = null)
     {
         startInfo.ArgumentList.Add("-f");
-        startInfo.ArgumentList.Add("bv*+ba/b");
+        startInfo.ArgumentList.Add(attempt?.GetVideoFormatSelector("bv*+ba/b") ?? "bv*+ba/b");
         startInfo.ArgumentList.Add("--merge-output-format");
         startInfo.ArgumentList.Add(options.EmbedSubs ? "mkv" : "mp4");
 
@@ -3626,6 +3472,11 @@ internal sealed class DownloadForm : Form
             ? _audioUrl
             : _url;
 
+        if (await TryInstagramCapturedFallbackFirstAsync(kind, downloadUrl, createDuplicateCopy))
+        {
+            return;
+        }
+
         if (await TryBuiltInDirectFirstAsync(kind, downloadUrl, createDuplicateCopy))
         {
             return;
@@ -3636,94 +3487,127 @@ internal sealed class DownloadForm : Form
             Program.Log($"Using browser cookies for yt-dlp: {options.Browser}");
         }
 
-        ProcessStartInfo startInfo = new()
-        {
-            FileName = _ytDlpPath,
-            WorkingDirectory = _downloadDirectory,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8
-        };
-
-        AddCommonArguments(startInfo, createDuplicateCopy);
-
-        if (kind == DownloadKind.Video)
-        {
-            YtDlpArgumentBuilder.AddVideoArguments(startInfo, options, downloadUrl);
-        }
-        else
-        {
-            YtDlpArgumentBuilder.AddAudioArguments(startInfo, options, downloadUrl);
-        }
-
-        startInfo.ArgumentList.Add(downloadUrl);
-
-        using Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
-        YtDlpRunDiagnostics diagnostics = new(
+        IReadOnlyList<YtDlpDownloadAttempt> attempts = YtDlpSites.GetDownloadAttempts(
             downloadUrl,
             _referer,
-            _userAgent,
-            options.UseCookies ? options.Browser : null,
-            kind == DownloadKind.Video ? _fallbackUrl : null);
-        _downloadProcess = process;
-
-        diagnostics.LogStart(_ytDlpPath, Program.Log, startInfo);
-        process.OutputDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
-        process.ErrorDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
-
+            options.UseCookies ? options.Browser : null);
         SetBusyState(kind);
 
         try
         {
             _isPreparingDownload = false;
-            process.Start();
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
 
-            await process.WaitForExitAsync();
-            process.WaitForExit();
-
-            if (process.ExitCode == 0)
+            for (int attemptIndex = 0; attemptIndex < attempts.Count; attemptIndex++)
             {
-                SetStatus("Done - saved in Downloads\\DLP", 100);
-                Program.Log($"{kind} download completed.");
-            }
-            else
-            {
-                _downloadProcess = null;
-                diagnostics.LogFailure(process.ExitCode, Program.Log);
-
-                if (await TryBuiltInFallbackAsync(
-                    kind,
-                    GetBuiltInFallbackUrl(kind, downloadUrl),
-                    GetBuiltInFallbackAudioUrl(kind, null),
-                    createDuplicateCopy))
+                YtDlpDownloadAttempt attempt = attempts[attemptIndex];
+                YtDlpDownloadOptions attemptOptions = attempt.SuppressCookies
+                    ? options with { UseCookies = false }
+                    : options;
+                ProcessStartInfo startInfo = new()
                 {
-                    return;
+                    FileName = _ytDlpPath,
+                    WorkingDirectory = _downloadDirectory,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
+                };
+
+                AddCommonArguments(startInfo, createDuplicateCopy, attempt);
+
+                if (kind == DownloadKind.Video)
+                {
+                    YtDlpArgumentBuilder.AddVideoArguments(startInfo, attemptOptions, downloadUrl, attempt);
+                }
+                else
+                {
+                    YtDlpArgumentBuilder.AddAudioArguments(startInfo, attemptOptions, downloadUrl);
                 }
 
-                SetStatus("Download failed - check DLP.log", 0);
-                Program.Log($"{kind} download failed with exit code {process.ExitCode}.");
-            }
-        }
-        catch (Exception ex)
-        {
-            _downloadProcess = null;
+                attempt.AddTo(startInfo);
+                startInfo.ArgumentList.Add(downloadUrl);
 
-            if (await TryBuiltInFallbackAsync(
-                kind,
-                GetBuiltInFallbackUrl(kind, downloadUrl),
-                GetBuiltInFallbackAudioUrl(kind, null),
-                createDuplicateCopy))
-            {
-                return;
-            }
+                using Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
+                YtDlpRunDiagnostics diagnostics = new(
+                    downloadUrl,
+                    _referer,
+                    _userAgent,
+                    attemptOptions.UseCookies ? attemptOptions.Browser : null,
+                    kind == DownloadKind.Video ? _fallbackUrl : null);
+                _downloadProcess = process;
 
-            SetStatus("Could not start download - check DLP.log", 0);
-            Program.Log($"Download start failed: {ex}");
+                Program.Log($"yt-dlp attempt {attemptIndex + 1}/{attempts.Count}: {attempt.Name}");
+                diagnostics.LogStart(_ytDlpPath, Program.Log, startInfo);
+                process.OutputDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
+                process.ErrorDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
+
+                try
+                {
+                    process.Start();
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+
+                    await process.WaitForExitAsync();
+                    process.WaitForExit();
+
+                    if (process.ExitCode == 0)
+                    {
+                        SetStatus("Done - saved in Downloads\\DLP", 100);
+                        Program.Log($"{kind} download completed.");
+                        return;
+                    }
+
+                    _downloadProcess = null;
+                    diagnostics.LogFailure(process.ExitCode, Program.Log);
+
+                    if (attemptIndex < attempts.Count - 1)
+                    {
+                        SetStatus($"Retrying {attempts[attemptIndex + 1].Name}", 0);
+                        Program.Log($"Retrying yt-dlp with attempt: {attempts[attemptIndex + 1].Name}");
+                        continue;
+                    }
+
+                    if (await TryBuiltInFallbackAsync(
+                        kind,
+                        GetBuiltInFallbackUrl(kind, downloadUrl),
+                        GetBuiltInFallbackAudioUrl(kind, null),
+                        createDuplicateCopy))
+                    {
+                        return;
+                    }
+
+                    SetStatus("Download failed - check DLP.log", 0);
+                    Program.Log($"{kind} download failed with exit code {process.ExitCode}.");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _downloadProcess = null;
+
+                    if (attemptIndex < attempts.Count - 1)
+                    {
+                        SetStatus($"Retrying {attempts[attemptIndex + 1].Name}", 0);
+                        Program.Log($"Download attempt failed: {ex.Message}");
+                        Program.Log($"Retrying yt-dlp with attempt: {attempts[attemptIndex + 1].Name}");
+                        continue;
+                    }
+
+                    if (await TryBuiltInFallbackAsync(
+                        kind,
+                        GetBuiltInFallbackUrl(kind, downloadUrl),
+                        GetBuiltInFallbackAudioUrl(kind, null),
+                        createDuplicateCopy))
+                    {
+                        return;
+                    }
+
+                    SetStatus("Could not start download - check DLP.log", 0);
+                    Program.Log($"Download start failed: {ex}");
+                    return;
+                }
+            }
         }
         finally
         {
@@ -3738,7 +3622,8 @@ internal sealed class DownloadForm : Form
         string downloadUrl,
         bool createDuplicateCopy)
     {
-        if (YtDlpPlatformPolicy.ShouldPreferYtDlp(downloadUrl, _referer))
+        if (YtDlpPlatformPolicy.ShouldPreferYtDlp(downloadUrl, _referer)
+            && !Instagram.IsDirectMediaUrl(downloadUrl))
         {
             Program.Log($"Skipping built-in direct first for yt-dlp platform URL: {downloadUrl}");
             return false;
@@ -3778,6 +3663,60 @@ internal sealed class DownloadForm : Form
         catch (Exception ex)
         {
             Program.Log($"Built-in media download failed before yt-dlp: {ex.Message}");
+        }
+        finally
+        {
+            _downloadProcess = null;
+        }
+
+        SetStatus("Trying yt-dlp", 0);
+        return false;
+    }
+
+    private async Task<bool> TryInstagramCapturedFallbackFirstAsync(
+        DownloadKind kind,
+        string downloadUrl,
+        bool createDuplicateCopy)
+    {
+        if (kind != DownloadKind.Video
+            || string.IsNullOrWhiteSpace(_fallbackUrl)
+            || !string.Equals(YtDlpSites.DetectPlatform(downloadUrl, _referer), Instagram.DisplayName, StringComparison.Ordinal)
+            || !BuiltInMediaDownloader.CanDownload(_fallbackUrl, null))
+        {
+            return false;
+        }
+
+        _isPreparingDownload = false;
+        SetBusyState(kind);
+        SetStatus("Trying Instagram direct media", 0);
+        Program.Log($"Trying captured Instagram media before yt-dlp: {_fallbackUrl}");
+
+        try
+        {
+            bool success = await BuiltInMediaDownloader.DownloadAsync(
+                _fallbackUrl,
+                null,
+                _downloadDirectory,
+                _title,
+                _referer,
+                _userAgent,
+                _ffmpegPath,
+                createDuplicateCopy,
+                Program.Log,
+                SetStatus,
+                process => _downloadProcess = process);
+
+            if (success)
+            {
+                SetStatus("Done - saved in Downloads\\DLP", 100);
+                return true;
+            }
+
+            Program.Log("Captured Instagram media failed before yt-dlp; continuing with yt-dlp attempts.");
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"Captured Instagram media failed before yt-dlp: {ex.Message}");
         }
         finally
         {
@@ -3964,10 +3903,16 @@ internal sealed class DownloadForm : Form
         return false;
     }
 
-    private void AddCommonArguments(ProcessStartInfo startInfo, bool createDuplicateCopy)
+    private void AddCommonArguments(
+        ProcessStartInfo startInfo,
+        bool createDuplicateCopy,
+        YtDlpDownloadAttempt? attempt)
     {
         startInfo.ArgumentList.Add("--newline");
-        startInfo.ArgumentList.Add("--no-playlist");
+        if (attempt?.AllowPlaylist != true)
+        {
+            startInfo.ArgumentList.Add("--no-playlist");
+        }
         startInfo.ArgumentList.Add("--no-mtime");
         startInfo.ArgumentList.Add("--windows-filenames");
         YtDlpNetworkArgumentBuilder.AddNetworkArguments(startInfo, _referer, _userAgent);
@@ -4247,8 +4192,7 @@ internal sealed class DownloadForm : Form
 
     private void OpenDownloadFolder()
     {
-        CryptStatus access = Crypt.UnlockForCurrentUser(
-            Crypt.DefaultUnlockDuration);
+        CryptStatus access = Crypt.UnlockForCurrentUser();
 
         ProcessStartInfo startInfo = new()
         {

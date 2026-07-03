@@ -107,6 +107,12 @@ internal static class BuiltInMediaDownloader
             }
 
             long? contentLength = response.Content.Headers.ContentLength;
+            string contentType = response.Content.Headers.ContentType?.MediaType ?? "unknown";
+            log("Built-in direct response: "
+                + $"profile={profile.Name} "
+                + $"status={(int)response.StatusCode} "
+                + $"contentType={contentType} "
+                + $"contentLength={(contentLength.HasValue ? contentLength.Value.ToString() : "unknown")}");
 
             if (File.Exists(outputPath))
             {
@@ -146,10 +152,16 @@ internal static class BuiltInMediaDownloader
             }
 
             await output.FlushAsync();
-            log($"Built-in direct file saved: {outputPath}");
+            if (totalRead <= 0)
+            {
+                throw new InvalidOperationException("Direct request returned an empty body");
+            }
+
+            log($"Built-in direct file saved: {outputPath} bytes={totalRead}");
         }
         catch
         {
+            TryDeleteFile(outputPath, log);
             throw;
         }
     }
@@ -242,6 +254,19 @@ internal static class BuiltInMediaDownloader
         request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", profile.FetchDest);
         request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", profile.FetchMode);
         request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", profile.FetchSite);
+        request.Headers.TryAddWithoutValidation("Sec-CH-UA", "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Google Chrome\";v=\"126\"");
+        request.Headers.TryAddWithoutValidation("Sec-CH-UA-Mobile", "?0");
+        request.Headers.TryAddWithoutValidation("Sec-CH-UA-Platform", "\"Windows\"");
+
+        if (!string.IsNullOrWhiteSpace(profile.Origin))
+        {
+            request.Headers.TryAddWithoutValidation("Origin", profile.Origin);
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.Range))
+        {
+            request.Headers.TryAddWithoutValidation("Range", profile.Range);
+        }
 
         if (profile.Navigation)
         {
@@ -278,6 +303,27 @@ internal static class BuiltInMediaDownloader
             ? GetOrigin(targetUri)
             : null;
 
+        if (Instagram.IsDirectMediaUrl(url))
+        {
+            string instagramOrigin = "https://www.instagram.com";
+            string instagramReferer = safeReferer
+                ?? "https://www.instagram.com/";
+
+            yield return RequestProfile.MediaRequest(
+                "instagram-media-range",
+                instagramReferer,
+                "cross-site",
+                instagramOrigin,
+                "bytes=0-");
+
+            yield return RequestProfile.MediaRequest(
+                "instagram-media-no-origin",
+                instagramReferer,
+                "cross-site",
+                null,
+                "bytes=0-");
+        }
+
         if (!string.IsNullOrWhiteSpace(safeReferer))
         {
             yield return RequestProfile.NavigationRequest("with-referrer", safeReferer, "same-origin");
@@ -301,6 +347,21 @@ internal static class BuiltInMediaDownloader
     }
 
     private static string GetOrigin(Uri uri) => $"{uri.Scheme}://{uri.Host}/";
+
+    private static void TryDeleteFile(string path, Action<string> log)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            log($"Could not delete incomplete direct download '{path}': {ex.Message}");
+        }
+    }
 
     private static bool IsDirectMediaUrl(string url)
     {
@@ -469,6 +530,8 @@ internal static class BuiltInMediaDownloader
         string FetchDest,
         string FetchMode,
         string FetchSite,
+        string? Origin,
+        string? Range,
         bool Navigation)
     {
         public static RequestProfile NavigationRequest(string name, string? referrer, string fetchSite) => new(
@@ -478,15 +541,24 @@ internal static class BuiltInMediaDownloader
             "document",
             "navigate",
             fetchSite,
+            null,
+            null,
             true);
 
-        public static RequestProfile MediaRequest(string name, string? referrer) => new(
+        public static RequestProfile MediaRequest(
+            string name,
+            string? referrer,
+            string fetchSite = "none",
+            string? origin = null,
+            string? range = null) => new(
             name,
             referrer,
-            "*/*",
+            "video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8",
             "video",
             "no-cors",
-            referrer is null ? "none" : "same-origin",
+            fetchSite,
+            origin,
+            range,
             false);
     }
 }

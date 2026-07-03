@@ -7,6 +7,15 @@ const lockFolderButton = document.getElementById("lockFolder");
 const viewerFrameElement = document.getElementById("viewerFrame");
 const viewerMessageElement = document.getElementById("viewerMessage");
 const viewerPlayButton = document.getElementById("viewerPlay");
+const searchInput = document.getElementById("searchDownloads");
+const sortSelect = document.getElementById("sortDownloads");
+const filterButtons = Array.from(document.querySelectorAll("[data-filter]"));
+const statCountElement = document.getElementById("statCount");
+const statVisibleElement = document.getElementById("statVisible");
+const statSizeElement = document.getElementById("statSize");
+const fileDetailsElement = document.getElementById("fileDetails");
+const detailsTitleElement = document.getElementById("detailsTitle");
+const detailsGridElement = document.getElementById("detailsGrid");
 const openedWithVideosHash = location.hash === "#videos";
 
 if (openedWithVideosHash && history.replaceState) {
@@ -21,6 +30,10 @@ let previewSwitchTimer = 0;
 let previewReadyTimer = 0;
 let previewLoadToken = 0;
 let restoredInitialScroll = false;
+let allFiles = [];
+let currentFilter = "all";
+let currentSearch = "";
+let currentSort = "recent";
 
 const PREVIEW_FADE_MS = 140;
 const PREVIEW_READY_TIMEOUT_MS = 1200;
@@ -46,11 +59,8 @@ function formatTime(value) {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
 }
 
-function formatUnlockTime(value) {
-  const date = new Date(value || "");
-  return Number.isNaN(date.getTime())
-    ? ""
-    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+function formatFileCount(count) {
+  return count === 1 ? "1 file" : `${count} files`;
 }
 
 function appendText(parent, text, className) {
@@ -63,6 +73,116 @@ function appendText(parent, text, className) {
 
   parent.appendChild(element);
   return element;
+}
+
+function getModifiedTime(file) {
+  const date = new Date(file?.modified || "");
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function getFileTitle(file) {
+  return file?.title || file?.fileName || "Untitled";
+}
+
+function getFileKind(file) {
+  return isAudio(file) ? "audio" : "video";
+}
+
+function getSearchText(file) {
+  return [
+    file?.title,
+    file?.fileName,
+    file?.extension,
+    file?.mediaType,
+    formatSize(file?.sizeBytes),
+    formatTime(file?.modified)
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function matchesCurrentFilter(file) {
+  if (currentFilter === "audio") {
+    return isAudio(file);
+  }
+
+  if (currentFilter === "video") {
+    return !isAudio(file);
+  }
+
+  return true;
+}
+
+function getVisibleFiles() {
+  const query = currentSearch.trim().toLowerCase();
+  const files = allFiles.filter((file) =>
+    matchesCurrentFilter(file) && (!query || getSearchText(file).includes(query)));
+
+  return files.sort((first, second) => {
+    if (currentSort === "name") {
+      return getFileTitle(first).localeCompare(getFileTitle(second), undefined, { sensitivity: "base" });
+    }
+
+    if (currentSort === "size") {
+      return (Number(second.sizeBytes) || 0) - (Number(first.sizeBytes) || 0);
+    }
+
+    if (currentSort === "type") {
+      return getFileKind(first).localeCompare(getFileKind(second))
+        || getFileTitle(first).localeCompare(getFileTitle(second), undefined, { sensitivity: "base" });
+    }
+
+    return getModifiedTime(second) - getModifiedTime(first);
+  });
+}
+
+function updateStats(visibleFiles) {
+  const totalBytes = allFiles.reduce((sum, file) => sum + (Number(file?.sizeBytes) || 0), 0);
+
+  statCountElement.textContent = formatFileCount(allFiles.length);
+  statVisibleElement.textContent = `${visibleFiles.length} shown`;
+  statSizeElement.textContent = formatSize(totalBytes) || "0 KB";
+}
+
+function createDetail(label, value) {
+  if (!value) {
+    return null;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "detail";
+
+  const term = document.createElement("dt");
+  term.textContent = label;
+
+  const description = document.createElement("dd");
+  description.textContent = value;
+
+  wrapper.append(term, description);
+  return wrapper;
+}
+
+function renderSelectedDetails(file) {
+  if (!fileDetailsElement || !detailsTitleElement || !detailsGridElement) {
+    return;
+  }
+
+  if (!file) {
+    fileDetailsElement.hidden = true;
+    detailsTitleElement.textContent = "";
+    detailsGridElement.replaceChildren();
+    return;
+  }
+
+  detailsTitleElement.textContent = getFileTitle(file);
+  detailsGridElement.replaceChildren(
+    ...[
+      createDetail("Type", getFileKind(file)),
+      createDetail("Size", formatSize(file.sizeBytes)),
+      createDetail("Modified", formatTime(file.modified)),
+      createDetail("Extension", file.extension),
+      createDetail("File", file.fileName)
+    ].filter(Boolean)
+  );
+  fileDetailsElement.hidden = false;
 }
 
 function restoreInitialScroll() {
@@ -100,7 +220,6 @@ function renderFolderAccess(folderAccess) {
 
   const access = folderAccess || {};
   const hasAccess = folderAccess && typeof folderAccess === "object";
-  const unlockTime = formatUnlockTime(access.unlockedUntilUtc);
   const isSupported = Boolean(hasAccess && access.isSupported !== false);
   const isUnlocked = Boolean(access.isUnlocked);
   const isBusy = Boolean(access.hasActiveOperations);
@@ -108,7 +227,7 @@ function renderFolderAccess(folderAccess) {
   let state = "unsupported";
 
   if (isSupported && isUnlocked) {
-    text = isBusy ? "Unlocked for download" : `Unlocked${unlockTime ? ` until ${unlockTime}` : ""}`;
+    text = isBusy ? "Unlocked for download" : "Unlocked";
     state = "unlocked";
   } else if (isSupported) {
     text = "Locked";
@@ -410,6 +529,13 @@ function getFileDetails(file) {
   ].filter(Boolean).join("  |  ");
 }
 
+function getCompactFileDetails(file) {
+  return [
+    formatSize(file.sizeBytes),
+    formatTime(file.modified)
+  ].filter(Boolean).join("  |  ");
+}
+
 function selectFile(file, item) {
   selectedFile = file;
 
@@ -424,6 +550,7 @@ function selectFile(file, item) {
   }
 
   renderPreview(file);
+  renderSelectedDetails(file);
   viewerFrameElement.setAttribute("aria-label", file.title || file.fileName || "Selected download");
   viewerPlayButton.disabled = !file.fileName;
   viewerPlayButton.textContent = "Open";
@@ -431,6 +558,7 @@ function selectFile(file, item) {
 
 function clearViewer(message) {
   selectedFile = null;
+  renderSelectedDetails(null);
   setPreviewMessage(message || "Select a file", "Choose a download from the list");
   viewerFrameElement.setAttribute("aria-label", "No download selected");
   viewerPlayButton.disabled = true;
@@ -453,10 +581,14 @@ function createVideoItem(file, selected) {
   row.className = "row";
 
   appendText(row, file.title || file.fileName || "Untitled", "title");
+  const badge = document.createElement("span");
+  badge.className = "file-badge";
+  badge.dataset.kind = getFileKind(file);
+  badge.textContent = (file.extension || getFileKind(file)).replace(/^\./, "");
+  row.appendChild(badge);
   item.appendChild(row);
 
-  appendText(item, getFileDetails(file), "meta ok");
-  appendText(item, file.fileName || "", "meta");
+  appendText(item, getCompactFileDetails(file), "meta ok");
   item.addEventListener("click", () => selectFile(file, item));
   item.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -468,8 +600,42 @@ function createVideoItem(file, selected) {
   return item;
 }
 
+function renderDownloadList() {
+  const visibleFiles = getVisibleFiles();
+  const selectedFileName = selectedFile?.fileName;
+  const nextSelection = visibleFiles.find((file) => file.fileName === selectedFileName) || visibleFiles[0] || null;
+
+  videosElement.replaceChildren();
+  updateStats(visibleFiles);
+
+  if (allFiles.length === 0) {
+    clearViewer("No downloads yet");
+    appendText(videosElement, "No downloads yet", "empty");
+    restoreInitialScroll();
+    return;
+  }
+
+  if (visibleFiles.length === 0) {
+    clearViewer("No matches");
+    appendText(videosElement, "No matching downloads", "empty");
+    restoreInitialScroll();
+    return;
+  }
+
+  for (const file of visibleFiles) {
+    const isSelected = file.fileName === nextSelection.fileName;
+    videosElement.appendChild(createVideoItem(file, isSelected));
+  }
+
+  selectFile(nextSelection, videosElement.querySelector(".item.active") || videosElement.querySelector(".item"));
+  restoreInitialScroll();
+}
+
 function renderError(message) {
   videosElement.replaceChildren();
+  allFiles = [];
+  updateStats([]);
+  renderSelectedDetails(null);
   setPreviewMessage("Could not load downloads", "Check DLP and try Refresh");
   viewerFrameElement.setAttribute("aria-label", "Downloads could not be loaded");
   viewerPlayButton.disabled = true;
@@ -479,6 +645,9 @@ function renderError(message) {
 }
 
 function loadDownloads() {
+  const previousText = refreshButton.textContent;
+  refreshButton.disabled = true;
+  refreshButton.textContent = "Refreshing";
   videosElement.replaceChildren();
   appendText(videosElement, "Loading", "empty");
   downloadPathElement.textContent = "";
@@ -488,38 +657,45 @@ function loadDownloads() {
   viewerPlayButton.textContent = "Open";
 
   sendNativeCommand("list_downloads", {}, (response) => {
+    refreshButton.disabled = false;
+    refreshButton.textContent = previousText || "Refresh";
+
     if (!response.ok) {
       renderError(response.message);
       return;
     }
 
-    const files = Array.isArray(response.files) ? response.files : [];
-    videosElement.replaceChildren();
+    allFiles = Array.isArray(response.files) ? response.files.filter(Boolean) : [];
     downloadPathElement.textContent = response.directory || "";
     renderFolderAccess(response.folderAccess);
-
-    if (files.length === 0) {
-      clearViewer("No downloads yet");
-      appendText(videosElement, "No downloads yet", "empty");
-      restoreInitialScroll();
-      return;
-    }
-
-    const firstFile = files[0] || {};
-
-    for (const file of files) {
-      const safeFile = file || {};
-      videosElement.appendChild(createVideoItem(safeFile, safeFile.fileName === firstFile.fileName));
-    }
-
-    selectFile(firstFile, videosElement.querySelector(".item"));
-    restoreInitialScroll();
+    renderDownloadList();
   });
 }
 
 refreshButton.addEventListener("click", loadDownloads);
 unlockFolderButton.addEventListener("click", unlockFolder);
 lockFolderButton.addEventListener("click", lockFolder);
+searchInput.addEventListener("input", () => {
+  currentSearch = searchInput.value || "";
+  renderDownloadList();
+});
+sortSelect.addEventListener("change", () => {
+  currentSort = sortSelect.value || "recent";
+  renderDownloadList();
+});
+for (const button of filterButtons) {
+  button.addEventListener("click", () => {
+    currentFilter = button.dataset.filter || "all";
+
+    for (const candidate of filterButtons) {
+      const isActive = candidate === button;
+      candidate.classList.toggle("is-active", isActive);
+      candidate.setAttribute("aria-pressed", isActive ? "true" : "false");
+    }
+
+    renderDownloadList();
+  });
+}
 viewerPlayButton.addEventListener("click", () => {
   if (selectedFile?.fileName) {
     openDownload(selectedFile.fileName, viewerPlayButton);
