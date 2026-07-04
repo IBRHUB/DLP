@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -8,6 +9,16 @@ using System.Text.RegularExpressions;
 internal sealed class LiveHlsProxy : IDisposable
 {
     private const int RequestHeaderLimit = 65536;
+    private const int RemoteFetchAttempts = 4;
+    private const int MaxPrefetchSegments = 4;
+    private const long MaxCachedBytes = 96L * 1024L * 1024L;
+    private const int MaxCachedItemBytes = 32 * 1024 * 1024;
+    private const long StableVariantMaxBandwidth = 4_500_000;
+    private const int StableVariantMaxHeight = 720;
+    private const int StableLiveStartTargetDurationsBehind = 3;
+    private static readonly TimeSpan SegmentCacheDuration = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan ResourceCacheDuration = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan LastGoodPlaylistDuration = TimeSpan.FromMinutes(2);
     private static readonly Regex UriAttributeRegex = new(@"URI=""([^""]+)""", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private readonly TcpListener _listener;
@@ -17,6 +28,13 @@ internal sealed class LiveHlsProxy : IDisposable
     private readonly string? _userAgent;
     private readonly string _token;
     private readonly CancellationTokenSource _stop = new();
+    private readonly ConcurrentDictionary<string, Lazy<Task<byte[]>>> _inflightBytes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CachedBytes> _byteCache = new(StringComparer.Ordinal);
+    private readonly object _cacheLock = new();
+    private readonly object _playlistLock = new();
+    private long _cachedBytes;
+    private string? _lastGoodPlaylist;
+    private DateTimeOffset _lastGoodPlaylistUtc;
 
     private LiveHlsProxy(string sourceUrl, string? referer, string? userAgent)
     {
@@ -177,8 +195,12 @@ internal sealed class LiveHlsProxy : IDisposable
         if (parts.Length == 3 && string.Equals(parts[1], "segment", StringComparison.OrdinalIgnoreCase))
         {
             string remoteUrl = DecodeUrl(parts[2]);
-            byte[] mediaBytes = await FetchBytesAsync(remoteUrl, cancellationToken);
-            mediaBytes = StripTransportStreamPrefix(mediaBytes);
+            byte[] mediaBytes = await GetCachedBytesAsync(
+                $"segment:{remoteUrl}",
+                remoteUrl,
+                stripTransportStreamPrefix: true,
+                SegmentCacheDuration,
+                cancellationToken);
             await WriteBytesAsync(stream, 200, "video/mp2t", mediaBytes, cancellationToken);
             return;
         }
@@ -186,7 +208,12 @@ internal sealed class LiveHlsProxy : IDisposable
         if (parts.Length == 3 && string.Equals(parts[1], "resource", StringComparison.OrdinalIgnoreCase))
         {
             string remoteUrl = DecodeUrl(parts[2]);
-            byte[] resourceBytes = await FetchBytesAsync(remoteUrl, cancellationToken);
+            byte[] resourceBytes = await GetCachedBytesAsync(
+                $"resource:{remoteUrl}",
+                remoteUrl,
+                stripTransportStreamPrefix: false,
+                ResourceCacheDuration,
+                cancellationToken);
             await WriteBytesAsync(stream, 200, "application/octet-stream", resourceBytes, cancellationToken);
             return;
         }
@@ -196,18 +223,56 @@ internal sealed class LiveHlsProxy : IDisposable
 
     private async Task<string> BuildPlaylistAsync(CancellationToken cancellationToken)
     {
+        try
+        {
+            PlaylistBuildResult result = await BuildPlaylistCoreAsync(cancellationToken);
+
+            lock (_playlistLock)
+            {
+                _lastGoodPlaylist = result.Playlist;
+                _lastGoodPlaylistUtc = DateTimeOffset.UtcNow;
+            }
+
+            QueueSegmentPrefetch(result.SegmentUrls, result.IsLive);
+            return result.Playlist;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && TryGetLastGoodPlaylist(out string playlist))
+        {
+            Program.Log($"Live proxy playlist fallback used after fetch failure: {ex.Message}");
+            return playlist;
+        }
+    }
+
+    private async Task<PlaylistBuildResult> BuildPlaylistCoreAsync(CancellationToken cancellationToken)
+    {
         string playlistUrl = _sourceUrl;
         string playlist = await FetchTextAsync(playlistUrl, cancellationToken);
-        string? variantUrl = SelectBestVariantUrl(playlist, playlistUrl);
+        IReadOnlyList<string> variantUrls = SelectStableVariantUrls(playlist, playlistUrl);
 
-        if (!string.IsNullOrWhiteSpace(variantUrl))
+        if (variantUrls.Count > 0)
         {
-            playlistUrl = variantUrl;
-            playlist = await FetchTextAsync(playlistUrl, cancellationToken);
+            for (int i = 0; i < variantUrls.Count; i++)
+            {
+                try
+                {
+                    playlistUrl = variantUrls[i];
+                    playlist = await FetchTextAsync(playlistUrl, cancellationToken);
+                    break;
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested && i < variantUrls.Count - 1)
+                {
+                    Program.Log($"Live proxy variant failed, trying fallback: {GetErrorSummary(ex)} url={ShortenUrl(variantUrls[i])}");
+                }
+            }
         }
 
         string[] lines = playlist.Split('\n');
+        bool isLive = !playlist.Contains("#EXT-X-ENDLIST", StringComparison.OrdinalIgnoreCase);
+        bool shouldAddLiveStart = isLive && !playlist.Contains("#EXT-X-START:", StringComparison.OrdinalIgnoreCase);
+        int liveStartOffsetSeconds = GetLiveStartOffsetSeconds(lines);
+        bool liveStartAdded = false;
         StringBuilder output = new(playlist.Length + 1024);
+        List<string> segmentUrls = [];
 
         foreach (string rawLine in lines)
         {
@@ -220,6 +285,16 @@ internal sealed class LiveHlsProxy : IDisposable
                 continue;
             }
 
+            if (shouldAddLiveStart
+                && !liveStartAdded
+                && trimmed.Equals("#EXTM3U", StringComparison.OrdinalIgnoreCase))
+            {
+                output.AppendLine(line);
+                output.AppendLine($"#EXT-X-START:TIME-OFFSET=-{liveStartOffsetSeconds},PRECISE=NO");
+                liveStartAdded = true;
+                continue;
+            }
+
             if (trimmed.StartsWith("#", StringComparison.Ordinal))
             {
                 output.AppendLine(RewriteUriAttributes(line, playlistUrl));
@@ -227,10 +302,11 @@ internal sealed class LiveHlsProxy : IDisposable
             }
 
             string absoluteUrl = ToAbsoluteUrl(trimmed, playlistUrl);
+            segmentUrls.Add(absoluteUrl);
             output.AppendLine(GetLocalSegmentUrl(absoluteUrl));
         }
 
-        return output.ToString();
+        return new PlaylistBuildResult(output.ToString(), segmentUrls, isLive);
     }
 
     private string RewriteUriAttributes(string line, string baseUrl)
@@ -244,16 +320,32 @@ internal sealed class LiveHlsProxy : IDisposable
 
     private async Task<string> FetchTextAsync(string url, CancellationToken cancellationToken)
     {
-        using HttpResponseMessage response = await SendRemoteRequestAsync(url, HttpMethod.Get, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsStringAsync(cancellationToken);
+        return await ExecuteRemoteFetchWithRetryAsync(
+            url,
+            "playlist",
+            retryNotFound: false,
+            async token =>
+            {
+                using HttpResponseMessage response = await SendRemoteRequestAsync(url, HttpMethod.Get, token);
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync(token);
+            },
+            cancellationToken);
     }
 
     private async Task<byte[]> FetchBytesAsync(string url, CancellationToken cancellationToken)
     {
-        using HttpResponseMessage response = await SendRemoteRequestAsync(url, HttpMethod.Get, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        return await ExecuteRemoteFetchWithRetryAsync(
+            url,
+            "bytes",
+            retryNotFound: true,
+            async token =>
+            {
+                using HttpResponseMessage response = await SendRemoteRequestAsync(url, HttpMethod.Get, token);
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsByteArrayAsync(token);
+            },
+            cancellationToken);
     }
 
     private async Task<HttpResponseMessage> SendRemoteRequestAsync(string url, HttpMethod method, CancellationToken cancellationToken)
@@ -279,6 +371,229 @@ internal sealed class LiveHlsProxy : IDisposable
         return await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
     }
 
+    private async Task<T> ExecuteRemoteFetchWithRetryAsync<T>(
+        string url,
+        string operation,
+        bool retryNotFound,
+        Func<CancellationToken, Task<T>> fetch,
+        CancellationToken cancellationToken)
+    {
+        Exception? lastError = null;
+
+        for (int attempt = 1; attempt <= RemoteFetchAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                return await fetch(cancellationToken);
+            }
+            catch (Exception ex) when (attempt < RemoteFetchAttempts && IsRetryableRemoteFetchError(ex, retryNotFound, cancellationToken))
+            {
+                lastError = ex;
+                Program.Log($"Live proxy {operation} retry {attempt}/{RemoteFetchAttempts}: {GetErrorSummary(ex)} url={ShortenUrl(url)}");
+                await Task.Delay(GetRetryDelay(attempt), cancellationToken);
+            }
+            catch
+            {
+                throw;
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("Remote fetch failed");
+    }
+
+    private async Task<byte[]> GetCachedBytesAsync(
+        string cacheKey,
+        string remoteUrl,
+        bool stripTransportStreamPrefix,
+        TimeSpan cacheDuration,
+        CancellationToken cancellationToken)
+    {
+        if (TryGetCachedBytes(cacheKey, out byte[] cachedBytes))
+        {
+            return cachedBytes;
+        }
+
+        Lazy<Task<byte[]>> lazy = _inflightBytes.GetOrAdd(
+            cacheKey,
+            _ => new Lazy<Task<byte[]>>(
+                () => FetchAndCacheBytesAsync(cacheKey, remoteUrl, stripTransportStreamPrefix, cacheDuration, cancellationToken),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+
+        try
+        {
+            return await lazy.Value;
+        }
+        finally
+        {
+            RemoveInflightBytes(cacheKey, lazy);
+        }
+    }
+
+    private async Task<byte[]> FetchAndCacheBytesAsync(
+        string cacheKey,
+        string remoteUrl,
+        bool stripTransportStreamPrefix,
+        TimeSpan cacheDuration,
+        CancellationToken cancellationToken)
+    {
+        byte[] bytes = await FetchBytesAsync(remoteUrl, cancellationToken);
+
+        if (stripTransportStreamPrefix)
+        {
+            bytes = StripTransportStreamPrefix(bytes);
+        }
+
+        StoreCachedBytes(cacheKey, bytes, cacheDuration);
+        return bytes;
+    }
+
+    private void QueueSegmentPrefetch(IReadOnlyList<string> segmentUrls, bool isLive)
+    {
+        int start = isLive ? Math.Max(0, segmentUrls.Count - MaxPrefetchSegments) : 0;
+        int end = isLive ? segmentUrls.Count : Math.Min(segmentUrls.Count, MaxPrefetchSegments);
+
+        for (int i = start; i < end; i++)
+        {
+            string remoteUrl = segmentUrls[i];
+            string cacheKey = $"segment:{remoteUrl}";
+
+            if (TryGetCachedBytes(cacheKey, out _) || _inflightBytes.ContainsKey(cacheKey))
+            {
+                continue;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await GetCachedBytesAsync(
+                        cacheKey,
+                        remoteUrl,
+                        stripTransportStreamPrefix: true,
+                        SegmentCacheDuration,
+                        _stop.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    // The proxy is shutting down.
+                }
+                catch (Exception ex)
+                {
+                    Program.Log($"Live proxy segment prefetch failed: {GetErrorSummary(ex)} url={ShortenUrl(remoteUrl)}");
+                }
+            }, CancellationToken.None);
+        }
+    }
+
+    private bool TryGetLastGoodPlaylist(out string playlist)
+    {
+        lock (_playlistLock)
+        {
+            if (!string.IsNullOrWhiteSpace(_lastGoodPlaylist)
+                && DateTimeOffset.UtcNow - _lastGoodPlaylistUtc <= LastGoodPlaylistDuration)
+            {
+                playlist = _lastGoodPlaylist;
+                return true;
+            }
+
+            playlist = string.Empty;
+            return false;
+        }
+    }
+
+    private bool TryGetCachedBytes(string cacheKey, out byte[] bytes)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        lock (_cacheLock)
+        {
+            if (_byteCache.TryGetValue(cacheKey, out CachedBytes? cached))
+            {
+                if (cached.ExpiresAtUtc > now)
+                {
+                    cached.LastAccessUtc = now;
+                    bytes = cached.Bytes;
+                    return true;
+                }
+
+                RemoveCachedBytesLocked(cacheKey, cached);
+            }
+        }
+
+        bytes = [];
+        return false;
+    }
+
+    private void StoreCachedBytes(string cacheKey, byte[] bytes, TimeSpan cacheDuration)
+    {
+        if (bytes.Length == 0 || bytes.Length > MaxCachedItemBytes)
+        {
+            return;
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        lock (_cacheLock)
+        {
+            if (_byteCache.TryGetValue(cacheKey, out CachedBytes? previous))
+            {
+                RemoveCachedBytesLocked(cacheKey, previous);
+            }
+
+            CachedBytes cached = new(bytes, now.Add(cacheDuration), now);
+            _byteCache[cacheKey] = cached;
+            _cachedBytes += bytes.LongLength;
+            TrimCacheLocked(now);
+        }
+    }
+
+    private void TrimCacheLocked(DateTimeOffset now)
+    {
+        foreach (KeyValuePair<string, CachedBytes> item in _byteCache.ToArray())
+        {
+            if (item.Value.ExpiresAtUtc <= now)
+            {
+                RemoveCachedBytesLocked(item.Key, item.Value);
+            }
+        }
+
+        if (_cachedBytes <= MaxCachedBytes)
+        {
+            return;
+        }
+
+        foreach (KeyValuePair<string, CachedBytes> item in _byteCache
+            .OrderBy(entry => entry.Value.LastAccessUtc)
+            .ToArray())
+        {
+            RemoveCachedBytesLocked(item.Key, item.Value);
+
+            if (_cachedBytes <= MaxCachedBytes)
+            {
+                return;
+            }
+        }
+    }
+
+    private void RemoveCachedBytesLocked(string cacheKey, CachedBytes cached)
+    {
+        if (_byteCache.Remove(cacheKey))
+        {
+            _cachedBytes = Math.Max(0, _cachedBytes - cached.Bytes.LongLength);
+        }
+    }
+
+    private void RemoveInflightBytes(string cacheKey, Lazy<Task<byte[]>> lazy)
+    {
+        if (_inflightBytes.TryGetValue(cacheKey, out Lazy<Task<byte[]>>? current)
+            && ReferenceEquals(current, lazy))
+        {
+            _inflightBytes.TryRemove(cacheKey, out _);
+        }
+    }
+
     private string GetLocalSegmentUrl(string remoteUrl) => $"{GetBaseUrl()}/segment/{EncodeUrl(remoteUrl)}";
 
     private string GetLocalResourceUrl(string remoteUrl) => $"{GetBaseUrl()}/resource/{EncodeUrl(remoteUrl)}";
@@ -289,12 +604,11 @@ internal sealed class LiveHlsProxy : IDisposable
         return $"http://127.0.0.1:{endpoint.Port}/{_token}";
     }
 
-    private static string? SelectBestVariantUrl(string playlist, string baseUrl)
+    private static IReadOnlyList<string> SelectStableVariantUrls(string playlist, string baseUrl)
     {
         string[] lines = playlist.Split('\n');
-        long pendingBandwidth = 0;
-        string? bestUrl = null;
-        long bestBandwidth = -1;
+        string? pendingStreamInfo = null;
+        List<HlsVariant> variants = [];
 
         foreach (string rawLine in lines)
         {
@@ -302,24 +616,195 @@ internal sealed class LiveHlsProxy : IDisposable
 
             if (line.StartsWith("#EXT-X-STREAM-INF:", StringComparison.OrdinalIgnoreCase))
             {
-                Match match = Regex.Match(line, @"BANDWIDTH=(\d+)", RegexOptions.IgnoreCase);
-                pendingBandwidth = match.Success ? long.Parse(match.Groups[1].Value) : 1;
+                pendingStreamInfo = line;
                 continue;
             }
 
-            if (pendingBandwidth > 0 && line.Length > 0 && !line.StartsWith("#", StringComparison.Ordinal))
+            if (!string.IsNullOrWhiteSpace(pendingStreamInfo)
+                && line.Length > 0
+                && !line.StartsWith("#", StringComparison.Ordinal))
             {
-                if (pendingBandwidth > bestBandwidth)
+                HlsVariant? variant = CreateHlsVariant(pendingStreamInfo, line, baseUrl);
+
+                if (variant is not null)
                 {
-                    bestUrl = ToAbsoluteUrl(line, baseUrl);
-                    bestBandwidth = pendingBandwidth;
+                    variants.Add(variant);
                 }
 
-                pendingBandwidth = 0;
+                pendingStreamInfo = null;
             }
         }
 
-        return bestUrl;
+        return variants.Count == 0
+            ? []
+            : OrderStableVariants(variants)
+                .Select(variant => variant.Url)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+    }
+
+    private static HlsVariant? CreateHlsVariant(string streamInfo, string urlLine, string baseUrl)
+    {
+        try
+        {
+            return new HlsVariant(
+                ToAbsoluteUrl(urlLine, baseUrl),
+                ReadLongAttribute(streamInfo, "AVERAGE-BANDWIDTH")
+                    ?? ReadLongAttribute(streamInfo, "BANDWIDTH")
+                    ?? 1,
+                ReadResolutionHeight(streamInfo));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<HlsVariant> OrderStableVariants(IReadOnlyList<HlsVariant> variants)
+    {
+        HlsVariant[] videoVariants = variants
+            .Where(variant => variant.Height > 0)
+            .ToArray();
+
+        if (videoVariants.Length > 0)
+        {
+            HlsVariant[] stableVideo = videoVariants
+                .Where(variant => variant.Height <= StableVariantMaxHeight && variant.Bandwidth <= StableVariantMaxBandwidth)
+                .OrderByDescending(variant => variant.Height)
+                .ThenByDescending(variant => variant.Bandwidth)
+                .ToArray();
+
+            HlsVariant[] stableHeight = videoVariants
+                .Where(variant => variant.Height <= StableVariantMaxHeight && variant.Bandwidth > StableVariantMaxBandwidth)
+                .OrderByDescending(variant => variant.Height)
+                .ThenBy(variant => variant.Bandwidth)
+                .ToArray();
+
+            HlsVariant[] largerVideo = videoVariants
+                .Where(variant => variant.Height > StableVariantMaxHeight)
+                .OrderBy(variant => variant.Height)
+                .ThenBy(variant => variant.Bandwidth)
+                .ToArray();
+
+            HlsVariant[] unknownResolution = variants
+                .Where(variant => variant.Height <= 0)
+                .OrderByDescending(variant => variant.Bandwidth)
+                .ToArray();
+
+            return stableVideo
+                .Concat(stableHeight)
+                .Concat(largerVideo)
+                .Concat(unknownResolution)
+                .ToArray();
+        }
+
+        HlsVariant[] stableBandwidth = variants
+            .Where(variant => variant.Bandwidth <= StableVariantMaxBandwidth)
+            .OrderByDescending(variant => variant.Bandwidth)
+            .ToArray();
+
+        HlsVariant[] largerBandwidth = variants
+            .Where(variant => variant.Bandwidth > StableVariantMaxBandwidth)
+            .OrderBy(variant => variant.Bandwidth)
+            .ToArray();
+
+        return stableBandwidth
+            .Concat(largerBandwidth)
+            .ToArray();
+    }
+
+    private static long? ReadLongAttribute(string line, string attributeName)
+    {
+        Match match = Regex.Match(line, $@"(?:^|,){Regex.Escape(attributeName)}=(\d+)", RegexOptions.IgnoreCase);
+
+        return match.Success && long.TryParse(match.Groups[1].Value, out long value)
+            ? value
+            : null;
+    }
+
+    private static int ReadResolutionHeight(string line)
+    {
+        Match match = Regex.Match(line, @"(?:^|,)RESOLUTION=\d+x(\d+)", RegexOptions.IgnoreCase);
+
+        return match.Success && int.TryParse(match.Groups[1].Value, out int height)
+            ? height
+            : 0;
+    }
+
+    private static int GetLiveStartOffsetSeconds(IEnumerable<string> playlistLines)
+    {
+        foreach (string rawLine in playlistLines)
+        {
+            string line = rawLine.Trim();
+
+            if (!line.StartsWith("#EXT-X-TARGETDURATION:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string value = line["#EXT-X-TARGETDURATION:".Length..].Trim();
+
+            if (int.TryParse(value, out int targetDuration) && targetDuration > 0)
+            {
+                return targetDuration * StableLiveStartTargetDurationsBehind;
+            }
+        }
+
+        return 6;
+    }
+
+    private static bool IsRetryableRemoteFetchError(Exception ex, bool retryNotFound, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        if (ex is HttpRequestException httpRequestException && httpRequestException.StatusCode is HttpStatusCode statusCode)
+        {
+            return IsRetryableStatusCode(statusCode, retryNotFound);
+        }
+
+        return ex is HttpRequestException
+            || ex is TaskCanceledException
+            || ex is TimeoutException
+            || ex is IOException;
+    }
+
+    private static bool IsRetryableStatusCode(HttpStatusCode statusCode, bool retryNotFound)
+    {
+        int code = (int)statusCode;
+
+        return code >= 500
+            || statusCode == HttpStatusCode.RequestTimeout
+            || statusCode == HttpStatusCode.TooManyRequests
+            || (retryNotFound && statusCode == HttpStatusCode.NotFound);
+    }
+
+    private static TimeSpan GetRetryDelay(int attempt)
+    {
+        return attempt switch
+        {
+            1 => TimeSpan.FromMilliseconds(250),
+            2 => TimeSpan.FromMilliseconds(650),
+            3 => TimeSpan.FromMilliseconds(1200),
+            _ => TimeSpan.FromMilliseconds(1800)
+        };
+    }
+
+    private static string GetErrorSummary(Exception ex)
+    {
+        if (ex is HttpRequestException httpRequestException && httpRequestException.StatusCode is HttpStatusCode statusCode)
+        {
+            return $"HTTP {(int)statusCode}";
+        }
+
+        return ex.GetType().Name;
+    }
+
+    private static string ShortenUrl(string url)
+    {
+        return url.Length <= 180 ? url : url[..177] + "...";
     }
 
     private static byte[] StripTransportStreamPrefix(byte[] bytes)
@@ -471,7 +956,8 @@ internal sealed class LiveHlsProxy : IDisposable
             CreateNoWindow = false
         };
 
-        startInfo.ArgumentList.Add("--network-caching=1200");
+        startInfo.ArgumentList.Add("--network-caching=6000");
+        startInfo.ArgumentList.Add("--http-reconnect");
         startInfo.ArgumentList.Add("--meta-title");
         startInfo.ArgumentList.Add(string.IsNullOrWhiteSpace(title) ? "DLP Live Stream" : title.Trim());
         startInfo.ArgumentList.Add(playlistUrl);
@@ -526,5 +1012,18 @@ internal sealed class LiveHlsProxy : IDisposable
         {
             // VLC may already be closed.
         }
+    }
+
+    private sealed record PlaylistBuildResult(string Playlist, IReadOnlyList<string> SegmentUrls, bool IsLive);
+
+    private sealed record HlsVariant(string Url, long Bandwidth, int Height);
+
+    private sealed class CachedBytes(byte[] bytes, DateTimeOffset expiresAtUtc, DateTimeOffset lastAccessUtc)
+    {
+        public byte[] Bytes { get; } = bytes;
+
+        public DateTimeOffset ExpiresAtUtc { get; } = expiresAtUtc;
+
+        public DateTimeOffset LastAccessUtc { get; set; } = lastAccessUtc;
     }
 }

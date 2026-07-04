@@ -24,4 +24,7 @@
     <None Include="..\tools\yt-dlp.exe" Link="tools\yt-dlp.exe" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\tools\yt-dlp.exe')" />
     <None Include="..\tools\ffmpeg.exe" Link="tools\ffmpeg.exe" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\tools\ffmpeg.exe')" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Krypton.Toolkit" Version="105.26.4.110" />
+  </ItemGroup>
 </Project>
