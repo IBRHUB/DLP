@@ -1,620 +1,534 @@
 using System.Drawing;
-using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Krypton.Toolkit;
 
 internal sealed partial class DownloadForm
 {
+    private static readonly Size MainClientSize = new(760, 760);
+    private const int IconButtonSize = 40;
+    private const string FontFamily = "Segoe UI";
+    private const string IconFontFamily = "Segoe Fluent Icons";
+
     private void BuildUi()
     {
         Text = "DLP";
         StartPosition = FormStartPosition.CenterScreen;
-        FormBorderStyle = FormBorderStyle.None;
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        ControlBox = true;
+        ShowIcon = false;
         MaximizeBox = false;
         MinimizeBox = true;
-        Width = 560;
-        Height = 600;
-        MinimumSize = new Size(560, 600);
-        PaletteMode = PaletteMode.MaterialDark;
-        ConfigureFormChrome();
+        ClientSize = MainClientSize;
+        MinimumSize = Size;
+        MaximumSize = Size;
         BackColor = DlpTheme.Bg;
-        Font = new Font("Segoe UI", 9.5F);
+        Font = new Font(FontFamily, 9.5F);
+        AllowDrop = true;
+
+        DragEnter += OnSourceDragEnter;
+        DragDrop += OnSourceDragDrop;
 
         TableLayoutPanel root = new()
         {
             Dock = DockStyle.Fill,
             BackColor = DlpTheme.Bg,
-            Padding = new Padding(14),
-            RowCount = 1,
+            Padding = new Padding(22, 16, 22, 14),
+            RowCount = 10,
             ColumnCount = 1
         };
 
-        TableLayoutPanel frame = new()
-        {
-            Dock = DockStyle.Fill,
-            BackColor = DlpTheme.Border,
-            Padding = new Padding(1),
-            RowCount = 1,
-            ColumnCount = 1,
-            Margin = new Padding(0)
-        };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        TableLayoutPanel surface = new()
-        {
-            Dock = DockStyle.Fill,
-            BackColor = DlpTheme.Bg,
-            RowCount = 3,
-            ColumnCount = 1,
-            Margin = new Padding(0)
-        };
+        root.Controls.Add(BuildSourceSection(), 0, 0);
+        root.Controls.Add(BuildDetectedSection(), 0, 1);
+        root.Controls.Add(BuildDownloadAsSection(), 0, 2);
+        root.Controls.Add(BuildQualityFormatSection(), 0, 3);
+        root.Controls.Add(BuildOptionsSection(), 0, 4);
+        root.Controls.Add(BuildSaveSection(), 0, 5);
+        root.Controls.Add(BuildPrimaryActionSection(), 0, 6);
+        root.Controls.Add(BuildProgressSection(), 0, 7);
+        root.Controls.Add(BuildFooterSection(), 0, 8);
 
-        surface.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        surface.RowStyles.Add(new RowStyle(SizeType.Absolute, 1));
-        surface.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        surface.Controls.Add(BuildHeaderPanel(), 0, 0);
-        surface.Controls.Add(CreateDivider(), 0, 1);
-        surface.Controls.Add(BuildMainContent(), 0, 2);
-
-        frame.Controls.Add(surface, 0, 0);
-        root.Controls.Add(frame, 0, 0);
         Controls.Add(root);
         ConfigureTrayIcon();
+        ConfigureToolTips();
     }
 
-    private TableLayoutPanel BuildHeaderPanel()
+    private Control BuildSourceSection()
     {
-        TableLayoutPanel header = new()
+        TableLayoutPanel section = CreateSection("Source", "\uE71B", bottomMargin: 12);
+        TableLayoutPanel row = new()
         {
             Dock = DockStyle.Top,
-            AutoSize = true,
-            BackColor = DlpTheme.Bg,
-            Padding = new Padding(20, 16, 20, 16),
-            ColumnCount = 3,
-            RowCount = 1,
-            Margin = new Padding(0)
-        };
-
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 50));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-
-        Panel mark = new()
-        {
-            Width = 38,
-            Height = 38,
-            BackColor = DlpTheme.TextPrimary,
-            Margin = new Padding(0, 0, 12, 0),
-            Anchor = AnchorStyles.Left
-        };
-
-        TableLayoutPanel copy = new()
-        {
-            AutoSize = true,
-            BackColor = DlpTheme.Bg,
-            ColumnCount = 1,
-            RowCount = 2,
-            Margin = new Padding(0),
-            Anchor = AnchorStyles.Left
-        };
-
-        copy.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        copy.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        Label title = new()
-        {
-            Text = "DLP",
-            AutoSize = true,
-            ForeColor = DlpTheme.TextPrimary,
-            Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold),
-            Margin = new Padding(0, 0, 0, 1)
-        };
-
-        Label subtitle = new()
-        {
-            Text = "Download bridge",
-            AutoSize = true,
-            ForeColor = DlpTheme.TextSecondary,
-            Font = new Font(Font.FontFamily, 9F, FontStyle.Regular),
-            Margin = new Padding(0)
-        };
-
-        copy.Controls.Add(title, 0, 0);
-        copy.Controls.Add(subtitle, 0, 1);
-
-        LinkLabel sourceLink = CreateHeaderLink("IBRHUB/DLP", "https://github.com/IBRHUB/DLP");
-        KryptonButton minimizeButton = new();
-        KryptonButton closeButton = new();
-        ConfigureChromeButton(minimizeButton, "_", (_, _) => WindowState = FormWindowState.Minimized);
-        ConfigureChromeButton(closeButton, "X", (_, _) => Close(), destructive: true);
-
-        TableLayoutPanel headerActions = new()
-        {
-            AutoSize = true,
-            BackColor = DlpTheme.Bg,
-            ColumnCount = 3,
-            RowCount = 1,
-            Margin = new Padding(0),
-            Anchor = AnchorStyles.Right
-        };
-
-        headerActions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        headerActions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        headerActions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        headerActions.Controls.Add(sourceLink, 0, 0);
-        headerActions.Controls.Add(minimizeButton, 1, 0);
-        headerActions.Controls.Add(closeButton, 2, 0);
-
-        EnableWindowDrag(header);
-        EnableWindowDrag(mark);
-        EnableWindowDrag(copy);
-        EnableWindowDrag(title);
-        EnableWindowDrag(subtitle);
-
-        header.Controls.Add(mark, 0, 0);
-        header.Controls.Add(copy, 1, 0);
-        header.Controls.Add(headerActions, 2, 0);
-
-        return header;
-    }
-
-    private TableLayoutPanel BuildMainContent()
-    {
-        TableLayoutPanel content = new()
-        {
-            Dock = DockStyle.Fill,
-            BackColor = DlpTheme.Bg,
-            Padding = new Padding(20, 18, 20, 14),
-            RowCount = 8,
-            ColumnCount = 1,
-            Margin = new Padding(0)
-        };
-
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        TableLayoutPanel urlPanel = new()
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            BackColor = DlpTheme.Bg,
-            ColumnCount = 1,
-            RowCount = 2,
-            Margin = new Padding(0, 0, 0, 20)
-        };
-
-        urlPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        urlPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        Label urlCaption = CreateSectionCaption("Source");
-
-        KryptonTextBox urlBox = new()
-        {
-            Text = _url,
-            ReadOnly = true,
-            PaletteMode = PaletteMode.Custom,
-            Dock = DockStyle.Top,
-            Height = 34,
-            Margin = new Padding(0)
-        };
-        ConfigureReadOnlyTextBox(urlBox);
-
-        urlPanel.Controls.Add(urlCaption);
-        urlPanel.Controls.Add(urlBox);
-
-        TableLayoutPanel optionsPanel = BuildOptionsPanel();
-
-        Label downloadCaption = CreateSectionCaption("Download");
-
-        TableLayoutPanel actions = new()
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
+            Height = IconButtonSize,
             BackColor = DlpTheme.Bg,
             ColumnCount = 2,
             RowCount = 1,
-            Margin = new Padding(0, 0, 0, 18)
+            Margin = new Padding(0)
         };
 
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IconButtonSize));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, IconButtonSize));
 
-        ConfigurePrimaryButton(_videoButton, "Video", async (_, _) => await StartDownloadAsync(DownloadKind.Video));
-        ConfigureSecondaryButton(_audioButton, "Audio", async (_, _) => await StartDownloadAsync(DownloadKind.Audio));
-        _videoButton.Margin = new Padding(0, 0, 6, 0);
-        _audioButton.Margin = new Padding(6, 0, 0, 0);
+        _urlBox.Dock = DockStyle.Fill;
+        _urlBox.Height = IconButtonSize;
+        _urlBox.Margin = new Padding(0, 0, 8, 0);
+        _urlBox.PaletteMode = PaletteMode.Custom;
+        _urlBox.AccessibleName = "Source URL";
+        _urlBox.AllowDrop = true;
+        _urlBox.Text = _url;
+        _urlBox.CueHint.CueHintText = "Paste link here or drag & drop";
+        _urlBox.CueHint.Color1 = DlpTheme.TextMuted;
+        _urlBox.CueHint.Font = new Font(FontFamily, 9.5F, FontStyle.Regular);
+        _urlBox.KeyDown += OnSourceKeyDown;
+        _urlBox.DragEnter += OnSourceDragEnter;
+        _urlBox.DragDrop += OnSourceDragDrop;
+        ConfigureInput(_urlBox);
 
-        actions.Controls.Add(_videoButton, 0, 0);
-        actions.Controls.Add(_audioButton, 1, 0);
+        ConfigureIconButton(_linkButton, "\uE71B", "Read link details", async (_, _) => await ProbeSourceAsync());
+        _linkButton.Dock = DockStyle.Fill;
+        _linkButton.Margin = Padding.Empty;
 
-        TableLayoutPanel folderPanel = new()
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            BackColor = DlpTheme.Bg,
-            ColumnCount = 2,
-            RowCount = 2,
-            Margin = new Padding(0, 0, 0, 18)
-        };
-
-        folderPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        folderPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        folderPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        folderPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-
-        Label folderPath = new()
-        {
-            Text = "Saves to Downloads\\DLP",
-            AutoSize = false,
-            Dock = DockStyle.Top,
-            Height = 22,
-            TextAlign = ContentAlignment.TopLeft,
-            ForeColor = DlpTheme.TextMuted,
-            Margin = new Padding(0, 0, 0, 8)
-        };
-
-        ConfigureSecondaryButton(_openFolderButton, "Open folder", (_, _) => OpenDownloadFolder());
-        ConfigureSecondaryButton(_updateButton, "Update", async (_, _) => await UpdateAllAsync());
-        _openFolderButton.Margin = new Padding(0, 0, 6, 0);
-        _updateButton.Margin = new Padding(6, 0, 0, 0);
-
-        folderPanel.Controls.Add(folderPath, 0, 0);
-        folderPanel.SetColumnSpan(folderPath, 2);
-        folderPanel.Controls.Add(_openFolderButton, 0, 1);
-        folderPanel.Controls.Add(_updateButton, 1, 1);
-
-        _progressBar.Dock = DockStyle.Top;
-        _progressBar.Height = 10;
-        _progressBar.Style = ProgressBarStyle.Continuous;
-        _progressBar.BackColor = DlpTheme.Surface;
-        _progressBar.ForeColor = DlpTheme.AccentActive;
-        _progressBar.Margin = new Padding(0, 0, 0, 12);
-        _progressBar.Visible = false;
-
-        _statusLabel.Text = "Ready";
-        _statusLabel.AutoSize = false;
-        _statusLabel.Dock = DockStyle.Fill;
-        _statusLabel.Height = 28;
-        _statusLabel.ForeColor = DlpTheme.TextSecondary;
-
-        content.Controls.Add(urlPanel, 0, 0);
-        content.Controls.Add(optionsPanel, 0, 1);
-        content.Controls.Add(downloadCaption, 0, 2);
-        content.Controls.Add(actions, 0, 3);
-        content.Controls.Add(folderPanel, 0, 4);
-        content.Controls.Add(_progressBar, 0, 5);
-        content.Controls.Add(new Panel { Dock = DockStyle.Fill, BackColor = DlpTheme.Bg }, 0, 6);
-        content.Controls.Add(BuildStatusPanel(), 0, 7);
-
-        return content;
+        row.Controls.Add(_urlBox, 0, 0);
+        row.Controls.Add(_linkButton, 1, 0);
+        section.Controls.Add(row, 0, 1);
+        return section;
     }
 
-    private static Panel CreateDivider() => new()
+    private Control BuildDetectedSection()
     {
-        Dock = DockStyle.Fill,
-        Height = 1,
-        BackColor = DlpTheme.Border,
-        Margin = new Padding(0)
-    };
+        TableLayoutPanel row = CreateFramedRow(columnCount: 5, height: 48, bottomMargin: 14);
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 126));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 10));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118));
 
-    private Label CreateSectionCaption(string text) => new()
-    {
-        Text = text,
-        AutoSize = true,
-        ForeColor = DlpTheme.TextSecondary,
-        Font = new Font(Font.FontFamily, 8.5F, FontStyle.Bold),
-        Margin = new Padding(0, 0, 0, 8)
-    };
+        _detectedKindLabel = CreateMetaLabel("Detected: Video");
+        _detectedTitleLabel = CreateMetaLabel("Title: Waiting for link");
+        _detectedDurationLabel = CreateMetaLabel("Duration: --:--");
 
-    private LinkLabel CreateHeaderLink(string text, string url)
-    {
-        LinkLabel link = new()
-        {
-            Text = text,
-            AutoSize = true,
-            BackColor = DlpTheme.SurfaceHover,
-            LinkColor = DlpTheme.TextPrimary,
-            ActiveLinkColor = DlpTheme.TextPrimary,
-            VisitedLinkColor = DlpTheme.TextPrimary,
-            LinkBehavior = LinkBehavior.NeverUnderline,
-            Font = new Font(Font.FontFamily, 8.5F, FontStyle.Bold),
-            Margin = new Padding(0),
-            Padding = new Padding(10, 6, 10, 6),
-            Anchor = AnchorStyles.Right
-        };
+        ConfigureSecondaryButton(_previewButton, "Preview", (_, _) => PreviewSource());
+        _previewButton.Dock = DockStyle.Fill;
+        _previewButton.Margin = new Padding(0);
 
-        link.LinkClicked += (_, _) => OpenExternalUrl(url);
-
-        return link;
+        row.Controls.Add(_detectedKindLabel, 0, 0);
+        row.Controls.Add(_detectedTitleLabel, 1, 0);
+        row.Controls.Add(_detectedDurationLabel, 2, 0);
+        row.Controls.Add(_previewButton, 4, 0);
+        return row;
     }
 
-    private TableLayoutPanel BuildStatusPanel()
+    private Control BuildDownloadAsSection()
     {
-        TableLayoutPanel statusPanel = new()
+        TableLayoutPanel section = CreateSection("Download as", "\uE896", bottomMargin: 14);
+        TableLayoutPanel row = new()
         {
-            Dock = DockStyle.Bottom,
-            AutoSize = true,
+            Dock = DockStyle.Top,
+            Height = 42,
             BackColor = DlpTheme.Bg,
-            ColumnCount = 3,
+            ColumnCount = 4,
             RowCount = 1,
-            Margin = new Padding(0, 8, 0, 0),
-            MinimumSize = new Size(0, 32)
+            Margin = new Padding(0)
         };
 
-        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 14));
-        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 16));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        _statusIndicator.Width = 6;
-        _statusIndicator.Height = 6;
-        _statusIndicator.BackColor = DlpTheme.TextSecondary;
-        _statusIndicator.Margin = new Padding(0, 10, 8, 0);
-        _statusIndicator.Anchor = AnchorStyles.Left;
+        ConfigureModeButton(_videoButton, "Video", true);
+        ConfigureModeButton(_audioButton, "Audio", false);
+        _videoButton.Click += (_, _) => SelectDownloadKind(DownloadKind.Video);
+        _audioButton.Click += (_, _) => SelectDownloadKind(DownloadKind.Audio);
 
-        ConfigureInlineButton(_openLogButton, "Log", (_, _) => OpenLogFile());
-        _openLogButton.Visible = false;
-
-        statusPanel.Controls.Add(_statusIndicator, 0, 0);
-        statusPanel.Controls.Add(_statusLabel, 1, 0);
-        statusPanel.Controls.Add(_openLogButton, 2, 0);
-
-        return statusPanel;
+        row.Controls.Add(_videoButton, 0, 0);
+        row.Controls.Add(_audioButton, 2, 0);
+        section.Controls.Add(row, 0, 1);
+        return section;
     }
 
-    private static void ConfigureChromeButton(
-        KryptonButton button,
-        string text,
-        EventHandler handler,
-        bool destructive = false)
-    {
-        button.Text = text;
-        button.Width = 30;
-        button.Height = 30;
-        button.ButtonStyle = ButtonStyle.Custom1;
-        button.PaletteMode = PaletteMode.Custom;
-        button.Margin = new Padding(6, 0, 0, 0);
-        button.TabStop = false;
-
-        Color backColor = DlpTheme.SurfaceHover;
-        Color hoverColor = destructive ? DlpTheme.Destructive : DlpTheme.Muted;
-        Color textColor = DlpTheme.TextPrimary;
-        Color hoverTextColor = destructive ? DlpTheme.AccentText : DlpTheme.TextPrimary;
-
-        ApplyKryptonButtonState(button, backColor, backColor, textColor);
-        ApplyKryptonButtonState(button.StateTracking, hoverColor, hoverColor, hoverTextColor);
-        ApplyKryptonButtonState(button.StatePressed, hoverColor, hoverColor, hoverTextColor);
-        ApplyKryptonButtonState(button.StateDisabled, DlpTheme.Bg, DlpTheme.Border, DlpTheme.DisabledText);
-        button.Click += handler;
-    }
-
-    private static void ConfigureInlineButton(KryptonButton button, string text, EventHandler handler)
-    {
-        button.Text = text;
-        button.Width = 54;
-        button.Height = 28;
-        button.ButtonStyle = ButtonStyle.Custom1;
-        button.PaletteMode = PaletteMode.Custom;
-        button.Margin = new Padding(10, 0, 0, 0);
-        button.TabStop = false;
-        ApplyKryptonButtonState(button, DlpTheme.SurfaceHover, DlpTheme.Border, DlpTheme.TextPrimary);
-        ApplyKryptonButtonState(button.StateTracking, DlpTheme.Muted, DlpTheme.BorderStrong, DlpTheme.TextPrimary);
-        ApplyKryptonButtonState(button.StatePressed, DlpTheme.Muted, DlpTheme.BorderStrong, DlpTheme.TextPrimary);
-        ApplyKryptonButtonState(button.StateDisabled, DlpTheme.Bg, DlpTheme.Border, DlpTheme.DisabledText);
-        button.Click += handler;
-    }
-
-    private void EnableWindowDrag(Control control)
-    {
-        control.MouseDown += BeginWindowDrag;
-    }
-
-    private void BeginWindowDrag(object? sender, MouseEventArgs e)
-    {
-        if (e.Button != MouseButtons.Left)
-        {
-            return;
-        }
-
-        ReleaseCapture();
-        SendMessage(Handle, WmNclButtonDown, HtCaption, 0);
-    }
-
-    private const int WmNclButtonDown = 0x00A1;
-    private const int HtCaption = 0x0002;
-
-    [DllImport("user32.dll")]
-    private static extern bool ReleaseCapture();
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
-
-    private void ConfigureFormChrome()
-    {
-        if (StateCommon is not null)
-        {
-            ApplyKryptonFormState(StateCommon, DlpTheme.TextPrimary);
-        }
-
-        if (StateActive is not null)
-        {
-            ApplyKryptonFormState(StateActive, DlpTheme.TextPrimary);
-        }
-
-        if (StateInactive is not null)
-        {
-            ApplyKryptonFormState(StateInactive, DlpTheme.TextSecondary);
-        }
-    }
-
-    private static void ApplyKryptonFormState(PaletteFormRedirect state, Color textColor)
-    {
-        state.Back.Color1 = DlpTheme.Bg;
-        state.Back.Color2 = DlpTheme.Bg;
-        ApplyKryptonFormBorder(state.Border);
-        ApplyKryptonFormHeader(state.Header, textColor);
-    }
-
-    private static void ApplyKryptonFormState(PaletteForm state, Color textColor)
-    {
-        state.Back.Color1 = DlpTheme.Bg;
-        state.Back.Color2 = DlpTheme.Bg;
-        ApplyKryptonFormBorder(state.Border);
-        ApplyKryptonFormHeader(state.Header, textColor);
-    }
-
-    private static void ApplyKryptonFormHeader(PaletteHeaderButtonRedirect header, Color textColor)
-    {
-        header.Back.Color1 = DlpTheme.Bg;
-        header.Back.Color2 = DlpTheme.Bg;
-        ApplyKryptonFormBorder(header.Border);
-        header.Content.ShortText.Color1 = textColor;
-        header.Content.ShortText.Color2 = textColor;
-        header.Content.ShortText.Font = new Font("Segoe UI", 9F, FontStyle.Regular);
-    }
-
-    private static void ApplyKryptonFormHeader(PaletteTripleMetric header, Color textColor)
-    {
-        header.Back.Color1 = DlpTheme.Bg;
-        header.Back.Color2 = DlpTheme.Bg;
-        ApplyKryptonFormBorder(header.Border);
-        header.Content.ShortText.Color1 = textColor;
-        header.Content.ShortText.Color2 = textColor;
-        header.Content.ShortText.Font = new Font("Segoe UI", 9F, FontStyle.Regular);
-    }
-
-    private static void ApplyKryptonFormBorder(PaletteFormBorder border)
-    {
-        border.Color1 = DlpTheme.Border;
-        border.Color2 = DlpTheme.Border;
-        border.DrawBorders = PaletteDrawBorders.All;
-        border.Rounding = 0F;
-        border.Width = 1;
-    }
-
-    private static void ApplyKryptonFormBorder(PaletteBorder border)
-    {
-        border.Color1 = DlpTheme.Border;
-        border.Color2 = DlpTheme.Border;
-        border.DrawBorders = PaletteDrawBorders.All;
-        border.Rounding = 0F;
-        border.Width = 1;
-    }
-
-    private TableLayoutPanel BuildOptionsPanel()
-    {
-        TableLayoutPanel panel = new()
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            BackColor = DlpTheme.Bg,
-            ColumnCount = 1,
-            RowCount = 4,
-            Margin = new Padding(0, 0, 0, 14)
-        };
-
-        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        Label optionsCaption = CreateSectionCaption("Options");
-
-        ConfigureToggleSwitch(_embedSubsSwitch);
-        ConfigureToggleSwitch(_cookiesSwitch);
-        _cookiesSwitch.CheckedChanged += (_, _) => UpdateBrowserComboEnabled();
-        ConfigureBrowserSelect();
-
-        TableLayoutPanel embedRow = CreateSettingRow("Embed subtitles", _embedSubsSwitch);
-        TableLayoutPanel cookiesRow = CreateSettingRow("Browser cookies", _cookiesSwitch);
-        _browserRow = CreateSettingRow("Browser", _browserSelect, out _browserSettingLabel);
-
-        panel.Controls.Add(optionsCaption, 0, 0);
-        panel.Controls.Add(embedRow, 0, 1);
-        panel.Controls.Add(cookiesRow, 0, 2);
-        panel.Controls.Add(_browserRow, 0, 3);
-
-        UpdateBrowserComboEnabled();
-
-        return panel;
-    }
-
-    private TableLayoutPanel CreateSettingRow(string title, Control control)
-    {
-        return CreateSettingRow(title, control, out _);
-    }
-
-    private TableLayoutPanel CreateSettingRow(string title, Control control, out Label titleLabel)
+    private Control BuildQualityFormatSection()
     {
         TableLayoutPanel row = new()
         {
             Dock = DockStyle.Top,
-            AutoSize = true,
+            Height = 66,
             BackColor = DlpTheme.Bg,
             ColumnCount = 2,
-            RowCount = 1,
-            Margin = new Padding(0, 0, 0, 10),
-            MinimumSize = new Size(0, 34)
+            RowCount = 2,
+            Margin = new Padding(0, 0, 0, 14)
         };
 
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 132));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
 
-        titleLabel = new Label
-        {
-            Text = title,
-            AutoSize = true,
-            Anchor = AnchorStyles.Left,
-            ForeColor = DlpTheme.TextPrimary,
-            Font = new Font(Font.FontFamily, 10F, FontStyle.Regular),
-            Margin = new Padding(0, 7, 12, 0)
-        };
+        row.Controls.Add(CreateFieldLabel("Quality"), 0, 0);
+        row.Controls.Add(CreateFieldLabel("Format"), 1, 0);
 
-        control.Dock = control switch
-        {
-            KryptonComboBox => DockStyle.Top,
-            KryptonToggleSwitch => DockStyle.None,
-            _ => DockStyle.Fill
-        };
-        control.Margin = new Padding(0, 1, 0, 1);
-        control.Anchor = AnchorStyles.Right;
+        ConfigureComboBox(_qualitySelect);
+        ConfigureComboBox(_formatSelect);
 
-        row.Controls.Add(titleLabel, 0, 0);
-        row.Controls.Add(control, 1, 0);
+        Control qualityHost = WrapComboWithChevron(_qualitySelect);
+        qualityHost.Margin = new Padding(0, 0, 14, 0);
+        Control formatHost = WrapComboWithChevron(_formatSelect);
+        formatHost.Margin = new Padding(0);
 
+        row.Controls.Add(qualityHost, 0, 1);
+        row.Controls.Add(formatHost, 1, 1);
         return row;
     }
 
-    private YtDlpDownloadOptions GetYtDlpOptions() => new(
-        _embedSubsSwitch.Checked,
-        _cookiesSwitch.Checked,
-        CookieBrowserCatalog.Normalize(_browserSelect.SelectedItem?.ToString()) ?? "brave");
+    private Control BuildOptionsSection()
+    {
+        TableLayoutPanel section = CreateSection("Options", "\uE90F", bottomMargin: 14);
+        TableLayoutPanel rows = new()
+        {
+            Dock = DockStyle.Top,
+            Height = 72,
+            BackColor = DlpTheme.Bg,
+            RowCount = 2,
+            ColumnCount = 1,
+            Margin = new Padding(0)
+        };
+
+        rows.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        rows.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+
+        ConfigureToggleSwitch(_embedSubsSwitch);
+        ConfigureToggleSwitch(_cookiesSwitch);
+        _cookiesSwitch.CheckedChanged += (_, _) => UpdateBrowserComboEnabled();
+
+        rows.Controls.Add(CreateOptionRow("Embed subtitles (if available)", _embedSubsSwitch), 0, 0);
+        rows.Controls.Add(CreateOptionRow("Include browser cookies", _cookiesSwitch), 0, 1);
+        section.Controls.Add(rows, 0, 1);
+        return section;
+    }
+
+    private Control BuildSaveSection()
+    {
+        TableLayoutPanel section = CreateSection("Save to", "\uE8B7", bottomMargin: 14);
+        TableLayoutPanel row = new()
+        {
+            Dock = DockStyle.Top,
+            Height = 42,
+            BackColor = DlpTheme.Bg,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0)
+        };
+
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
+
+        _savePathBox.Text = ShortDisplayPath(_downloadDirectory);
+        _savePathBox.ReadOnly = true;
+        _savePathBox.Dock = DockStyle.Fill;
+        _savePathBox.Height = 40;
+        _savePathBox.Margin = new Padding(0, 0, 8, 0);
+        _savePathBox.PaletteMode = PaletteMode.Custom;
+        _savePathBox.AccessibleName = "Save location";
+        ConfigureInput(_savePathBox);
+
+        ConfigureSecondaryButton(_browseButton, "Browse", (_, _) => BrowseSaveDirectory());
+        _browseButton.Dock = DockStyle.Fill;
+        _browseButton.Margin = new Padding(0);
+
+        row.Controls.Add(_savePathBox, 0, 0);
+        row.Controls.Add(_browseButton, 1, 0);
+        section.Controls.Add(row, 0, 1);
+        return section;
+    }
+
+    private Control BuildPrimaryActionSection()
+    {
+        ConfigurePrimaryButton(_downloadButton, "Download", async (_, _) => await StartDownloadAsync());
+        _downloadButton.Dock = DockStyle.Top;
+        _downloadButton.Height = 48;
+        _downloadButton.Margin = new Padding(0, 0, 0, 14);
+        return _downloadButton;
+    }
+
+    private Control BuildProgressSection()
+    {
+        _progressPanel.Dock = DockStyle.Top;
+        _progressPanel.Height = 58;
+        _progressPanel.MinimumSize = new Size(0, 58);
+        _progressPanel.BackColor = DlpTheme.Surface;
+        _progressPanel.ColumnCount = 2;
+        _progressPanel.RowCount = 2;
+        _progressPanel.Margin = new Padding(0, 0, 0, 10);
+        _progressPanel.Padding = new Padding(10, 7, 10, 8);
+        _progressPanel.ColumnStyles.Clear();
+        _progressPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _progressPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
+        _progressPanel.RowStyles.Clear();
+        _progressPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        _progressPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 14));
+
+        _statusLabel.AutoSize = false;
+        _statusLabel.Dock = DockStyle.Fill;
+        _statusLabel.Text = "Ready to download";
+        _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _statusLabel.ForeColor = DlpTheme.TextSecondary;
+        _statusLabel.BackColor = DlpTheme.Surface;
+        _statusLabel.Font = new Font(FontFamily, 9F, FontStyle.Regular);
+
+        _progressValueLabel.AutoSize = false;
+        _progressValueLabel.Dock = DockStyle.Fill;
+        _progressValueLabel.Text = "0%";
+        _progressValueLabel.TextAlign = ContentAlignment.MiddleRight;
+        _progressValueLabel.ForeColor = DlpTheme.TextPrimary;
+        _progressValueLabel.BackColor = DlpTheme.Surface;
+        _progressValueLabel.Font = new Font(FontFamily, 9F, FontStyle.Bold);
+
+        _progressBar.Dock = DockStyle.Fill;
+        _progressBar.Value = 0;
+        _progressBar.Height = 6;
+        _progressBar.Margin = new Padding(0, 4, 0, 4);
+
+        _progressPanel.Controls.Add(_statusLabel, 0, 0);
+        _progressPanel.Controls.Add(_progressValueLabel, 1, 0);
+        _progressPanel.Controls.Add(_progressBar, 0, 1);
+        _progressPanel.SetColumnSpan(_progressBar, 2);
+        return _progressPanel;
+    }
+
+    private Control BuildFooterSection()
+    {
+        TableLayoutPanel footer = new()
+        {
+            Dock = DockStyle.Bottom,
+            Height = 42,
+            BackColor = DlpTheme.Bg,
+            ColumnCount = 5,
+            RowCount = 1,
+            Margin = new Padding(0)
+        };
+
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+
+        ConfigureIconButton(_settingsButton, "\uE713", "Check updates", async (_, _) => await UpdateAllAsync());
+
+        Label version = new()
+        {
+            Text = $"v{Application.ProductVersion.Split('+')[0]}",
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = DlpTheme.TextSecondary,
+            Font = new Font(FontFamily, 9F, FontStyle.Regular)
+        };
+
+        ConfigureInlineButton(_cancelButton, "Cancel", (_, _) => CancelDownload());
+        _cancelButton.Visible = false;
+        ConfigureSecondaryButton(_openLogButton, "Log", (_, _) => OpenLogFile());
+        _openLogButton.Visible = false;
+        ConfigureSecondaryButton(_openFolderButton, "Open downloads folder", (_, _) => OpenDownloadFolder());
+        _openFolderButton.Dock = DockStyle.Fill;
+        _openFolderButton.Margin = new Padding(0, 3, 0, 3);
+
+        footer.Controls.Add(_settingsButton, 0, 0);
+        footer.Controls.Add(version, 1, 0);
+        footer.Controls.Add(_cancelButton, 3, 0);
+        footer.Controls.Add(_openLogButton, 3, 0);
+        footer.Controls.Add(_openFolderButton, 4, 0);
+        return footer;
+    }
+
+    private TableLayoutPanel CreateSection(string title, string iconGlyph, int bottomMargin)
+    {
+        TableLayoutPanel section = new()
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            BackColor = DlpTheme.Bg,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = new Padding(0, 0, 0, bottomMargin)
+        };
+
+        section.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        section.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        section.Controls.Add(CreateSectionCaption(title, iconGlyph), 0, 0);
+        return section;
+    }
+
+    private Control CreateSectionCaption(string text, string iconGlyph)
+    {
+        FlowLayoutPanel caption = new()
+        {
+            Dock = DockStyle.Top,
+            Height = 24,
+            BackColor = DlpTheme.Bg,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(0, 0, 0, 4)
+        };
+
+        caption.Controls.Add(new Label
+        {
+            Text = iconGlyph,
+            AutoSize = false,
+            Width = 24,
+            Height = 22,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = DlpTheme.TextSecondary,
+            Font = new Font(IconFontFamily, 12F)
+        });
+
+        caption.Controls.Add(new Label
+        {
+            Text = text,
+            AutoSize = true,
+            Height = 22,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = DlpTheme.TextPrimary,
+            Font = new Font(FontFamily, 9.5F, FontStyle.Bold),
+            Margin = new Padding(0, 2, 0, 0)
+        });
+
+        return caption;
+    }
+
+    private static Label CreateFieldLabel(string text) => new()
+    {
+        Text = text,
+        AutoSize = false,
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleLeft,
+        ForeColor = DlpTheme.TextSecondary,
+        BackColor = DlpTheme.Bg,
+        Font = new Font(FontFamily, 9F, FontStyle.Bold),
+        Margin = new Padding(0)
+    };
+
+    private static Label CreateMetaLabel(string text) => new()
+    {
+        Text = text,
+        AutoSize = false,
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleLeft,
+        ForeColor = DlpTheme.TextPrimary,
+        BackColor = DlpTheme.Surface,
+        Font = new Font(FontFamily, 9F, FontStyle.Regular),
+        Margin = new Padding(8, 0, 8, 0)
+    };
+
+    private static TableLayoutPanel CreateFramedRow(int columnCount, int height, int bottomMargin)
+    {
+        return new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = height,
+            BackColor = DlpTheme.Surface,
+            ColumnCount = columnCount,
+            RowCount = 1,
+            Margin = new Padding(0, 0, 0, bottomMargin),
+            Padding = new Padding(2)
+        };
+    }
+
+    private TableLayoutPanel CreateOptionRow(string title, KryptonToggleSwitch toggle)
+    {
+        TableLayoutPanel row = new()
+        {
+            Dock = DockStyle.Fill,
+            BackColor = DlpTheme.Bg,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(0, 2, 0, 2)
+        };
+
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 54));
+
+        Label label = new()
+        {
+            Text = title,
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = DlpTheme.TextPrimary,
+            BackColor = DlpTheme.Bg,
+            Font = new Font(FontFamily, 9.5F, FontStyle.Regular),
+            Margin = new Padding(0, 0, 8, 0)
+        };
+
+        toggle.Dock = DockStyle.Fill;
+        toggle.Margin = new Padding(0, 0, 12, 0);
+
+        row.Controls.Add(label, 0, 0);
+        row.Controls.Add(toggle, 1, 0);
+        return row;
+    }
+
+    private void ConfigureToolTips()
+    {
+        _toolTips.SetToolTip(_urlBox, "Paste a supported HTTPS media link or drag it here.");
+        _toolTips.SetToolTip(_linkButton, "Read link details.");
+        _toolTips.SetToolTip(_previewButton, "Open the source link in your browser.");
+        _toolTips.SetToolTip(_videoButton, "Download video.");
+        _toolTips.SetToolTip(_audioButton, "Download audio.");
+        _toolTips.SetToolTip(_qualitySelect, "Video quality limit.");
+        _toolTips.SetToolTip(_formatSelect, "Output format.");
+        _toolTips.SetToolTip(_embedSubsSwitch, "Embed subtitles when yt-dlp can find them.");
+        _toolTips.SetToolTip(_cookiesSwitch, "Use browser cookies for sites that require a session.");
+        _toolTips.SetToolTip(_browseButton, "Choose a save folder.");
+        _toolTips.SetToolTip(_downloadButton, "Start download.");
+        _toolTips.SetToolTip(_settingsButton, "Check DLP and yt-dlp updates.");
+        _toolTips.SetToolTip(_openFolderButton, "Open the selected download folder.");
+        _toolTips.SetToolTip(_cancelButton, "Stop the active download.");
+        _toolTips.SetToolTip(_openLogButton, "Open DLP.log.");
+    }
+
+    private YtDlpDownloadOptions GetYtDlpOptions()
+    {
+        return new YtDlpDownloadOptions(
+            _embedSubsSwitch.Checked,
+            _cookiesSwitch.Checked,
+            CookieBrowserCatalog.Normalize(_browserSelect.SelectedItem?.ToString()) ?? "brave",
+            GetSelectedQualityHeight(),
+            GetSelectedFormat(),
+            ResolveSelectedDownloadDirectory());
+    }
 
     private void UpdateBrowserComboEnabled()
     {
-        bool showBrowser = _cookiesSwitch.Checked;
-        bool allowBrowser = _cookiesSwitch.Enabled && showBrowser;
-
-        if (!showBrowser)
-        {
-            _browserSelect.DroppedDown = false;
-        }
-
-        _browserRow.Visible = showBrowser;
+        bool allowBrowser = _cookiesSwitch.Enabled && _cookiesSwitch.Checked;
         _browserSelect.Enabled = allowBrowser;
-        _browserSettingLabel.ForeColor = allowBrowser ? DlpTheme.TextPrimary : DlpTheme.TextSecondary;
-        _browserSelect.Invalidate();
+        _browserSelect.Visible = allowBrowser;
     }
 
     private void SetOptionControlsEnabled(bool enabled)
     {
         _embedSubsSwitch.Enabled = enabled;
         _cookiesSwitch.Enabled = enabled;
+        _qualitySelect.Enabled = enabled && _videoButton.Checked;
+        _formatSelect.Enabled = enabled;
+        _browseButton.Enabled = enabled;
+        _urlBox.Enabled = enabled;
+        _linkButton.Enabled = enabled;
+        _previewButton.Enabled = enabled && HasUsableSource();
+        _videoButton.Enabled = enabled;
+        _audioButton.Enabled = enabled;
         UpdateBrowserComboEnabled();
     }
 
@@ -630,23 +544,10 @@ internal sealed partial class DownloadForm
 
         _browserSelect.SelectedIndex = 0;
         _browserSelect.EndUpdate();
-
-        _browserSelect.DropDownStyle = ComboBoxStyle.DropDownList;
-        _browserSelect.PaletteMode = PaletteMode.Custom;
-        _browserSelect.InputControlStyle = InputControlStyle.Custom1;
-        _browserSelect.ItemStyle = ButtonStyle.Custom1;
-        _browserSelect.DropButtonStyle = ButtonStyle.Custom1;
-        _browserSelect.DropBackStyle = PaletteBackStyle.ControlCustom1;
-        _browserSelect.BackColor = DlpTheme.Surface;
-        _browserSelect.ForeColor = DlpTheme.TextPrimary;
-        _browserSelect.Font = new Font(Font.FontFamily, 9.5F);
-        _browserSelect.ItemHeight = 30;
-        _browserSelect.IntegralHeight = false;
-        _browserSelect.MaxDropDownItems = CookieBrowserCatalog.Values.Length;
-        _browserSelect.DropDownHeight = (CookieBrowserCatalog.Values.Length * 30) + 2;
-        _browserSelect.Enabled = false;
-        ConfigureBrowserComboBox(_browserSelect);
-        UpdateBrowserComboEnabled();
+        ConfigureComboBox(_browserSelect);
+        _browserSelect.Width = 132;
+        _browserSelect.Height = 32;
+        _browserSelect.Visible = false;
     }
 
     private void ApplyInitialCookieBrowser()
@@ -673,142 +574,257 @@ internal sealed partial class DownloadForm
     private static void ConfigurePrimaryButton(KryptonButton button, string text, EventHandler handler)
     {
         button.Text = text;
-        button.Dock = DockStyle.Fill;
-        button.Height = 42;
+        button.Height = 44;
         button.ButtonStyle = ButtonStyle.Custom1;
         button.PaletteMode = PaletteMode.Custom;
         button.Margin = new Padding(0);
-        ApplyKryptonButtonState(button, DlpTheme.AccentActive, DlpTheme.AccentActive, DlpTheme.AccentText);
-        ApplyKryptonButtonState(button.StateTracking, DlpTheme.AccentHover, DlpTheme.AccentHover, DlpTheme.AccentText);
-        ApplyKryptonButtonState(button.StatePressed, DlpTheme.Accent, DlpTheme.Accent, DlpTheme.AccentText);
-        ApplyKryptonButtonState(button.StateDisabled, DlpTheme.Surface, DlpTheme.Border, DlpTheme.DisabledText);
+        button.AccessibleName = text.Replace("\uE896", "Download", StringComparison.Ordinal).Trim();
+        ApplyKryptonButtonState(button, DlpTheme.AccentActive, DlpTheme.AccentActive, DlpTheme.AccentText, rounding: 0);
+        ApplyKryptonButtonState(button.StateTracking, DlpTheme.AccentHover, DlpTheme.AccentHover, DlpTheme.AccentText, rounding: 0);
+        ApplyKryptonButtonState(button.StatePressed, DlpTheme.Accent, DlpTheme.BorderStrong, DlpTheme.AccentText, rounding: 0);
+        ApplyKryptonButtonState(button.StateDisabled, DlpTheme.SurfaceHover, DlpTheme.Border, DlpTheme.DisabledText, rounding: 0);
         button.Click += handler;
     }
 
     private static void ConfigureSecondaryButton(KryptonButton button, string text, EventHandler handler)
     {
         button.Text = text;
-        button.Dock = DockStyle.Fill;
-        button.Height = 40;
+        button.Height = 38;
         button.ButtonStyle = ButtonStyle.Custom1;
         button.PaletteMode = PaletteMode.Custom;
         button.Margin = new Padding(0);
-        ApplyKryptonButtonState(button, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary);
-        ApplyKryptonButtonState(button.StateTracking, DlpTheme.SurfaceHover, DlpTheme.BorderStrong, DlpTheme.TextPrimary);
-        ApplyKryptonButtonState(button.StatePressed, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary);
-        ApplyKryptonButtonState(button.StateDisabled, DlpTheme.Bg, DlpTheme.Border, DlpTheme.DisabledText);
+        button.AccessibleName = text;
+        ApplyKryptonButtonState(button, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonButtonState(button.StateTracking, DlpTheme.SurfaceHover, DlpTheme.BorderStrong, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonButtonState(button.StatePressed, DlpTheme.Muted, DlpTheme.AccentInteractive, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonButtonState(button.StateDisabled, DlpTheme.Surface, DlpTheme.Border, DlpTheme.DisabledText, rounding: 0);
         button.Click += handler;
     }
 
-    private static void ConfigureReadOnlyTextBox(KryptonTextBox textBox)
+    private static void ConfigureInlineButton(KryptonButton button, string text, EventHandler handler)
     {
-        ApplyKryptonInputState(textBox.StateCommon, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary);
-        ApplyKryptonInputState(textBox.StateNormal, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary);
-        ApplyKryptonInputState(textBox.StateActive, DlpTheme.Surface, DlpTheme.AccentInteractive, DlpTheme.TextPrimary);
-        ApplyKryptonInputState(textBox.StateDisabled, DlpTheme.Bg, DlpTheme.Border, DlpTheme.DisabledText);
+        ConfigureSecondaryButton(button, text, handler);
+        button.Width = text.Length > 3 ? 68 : 54;
+        button.Height = 34;
+        button.Margin = new Padding(4, 4, 4, 4);
     }
 
-    private static void ConfigureBrowserComboBox(KryptonComboBox comboBox)
+    private static void ConfigureIconButton(KryptonButton button, string glyph, string accessibleName, EventHandler handler)
     {
-        ApplyKryptonInputState(comboBox.StateCommon.ComboBox, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary);
-        ApplyKryptonInputState(comboBox.StateNormal.ComboBox, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary);
-        ApplyKryptonInputState(comboBox.StateActive.ComboBox, DlpTheme.Surface, DlpTheme.AccentInteractive, DlpTheme.TextPrimary);
-        ApplyKryptonInputState(comboBox.StateDisabled.ComboBox, DlpTheme.Bg, DlpTheme.Border, DlpTheme.DisabledText);
+        button.Text = glyph;
+        button.Width = IconButtonSize;
+        button.Height = IconButtonSize;
+        button.ButtonStyle = ButtonStyle.Custom1;
+        button.PaletteMode = PaletteMode.Custom;
+        button.Margin = new Padding(0, 1, 8, 1);
+        button.AccessibleName = accessibleName;
+        ApplyKryptonButtonState(button, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary, rounding: 0, font: new Font(IconFontFamily, 12F));
+        ApplyKryptonButtonState(button.StateTracking, DlpTheme.SurfaceHover, DlpTheme.BorderStrong, DlpTheme.AccentInteractive, rounding: 0, font: new Font(IconFontFamily, 12F));
+        ApplyKryptonButtonState(button.StatePressed, DlpTheme.Muted, DlpTheme.AccentInteractive, DlpTheme.TextPrimary, rounding: 0, font: new Font(IconFontFamily, 12F));
+        ApplyKryptonButtonState(button.StateDisabled, DlpTheme.Surface, DlpTheme.Border, DlpTheme.DisabledText, rounding: 0, font: new Font(IconFontFamily, 12F));
+        button.Click += handler;
+    }
 
-        comboBox.StateCommon.DropBack.Color1 = DlpTheme.Surface;
-        comboBox.StateCommon.DropBack.Color2 = DlpTheme.Surface;
-        ApplyKryptonButtonState(comboBox.StateCommon.Item, DlpTheme.Surface, DlpTheme.Surface, DlpTheme.TextPrimary);
-        ApplyKryptonButtonState(comboBox.StateNormal.Item, DlpTheme.Surface, DlpTheme.Surface, DlpTheme.TextPrimary);
-        ApplyKryptonButtonState(comboBox.StateTracking.Item, DlpTheme.SurfaceHover, DlpTheme.SurfaceHover, DlpTheme.TextPrimary);
-        ApplyKryptonButtonState(comboBox.StateDisabled.Item, DlpTheme.Bg, DlpTheme.Border, DlpTheme.DisabledText);
+    private static void ConfigureModeButton(KryptonCheckButton button, string text, bool isChecked)
+    {
+        button.Text = text;
+        button.Dock = DockStyle.Fill;
+        button.Height = 40;
+        button.Checked = isChecked;
+        button.ButtonStyle = ButtonStyle.Custom1;
+        button.PaletteMode = PaletteMode.Custom;
+        button.Margin = new Padding(0);
+        button.AccessibleName = text;
+        ApplyKryptonButtonState(button, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonButtonState(button.StateTracking, DlpTheme.SurfaceHover, DlpTheme.BorderStrong, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonButtonState(button.StatePressed, DlpTheme.Muted, DlpTheme.AccentInteractive, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonButtonState(button.StateCheckedNormal, DlpTheme.Muted, DlpTheme.AccentInteractive, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonButtonState(button.StateCheckedTracking, DlpTheme.SurfaceHover, DlpTheme.AccentInteractive, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonButtonState(button.StateCheckedPressed, DlpTheme.Muted, DlpTheme.AccentInteractive, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonButtonState(button.StateDisabled, DlpTheme.Surface, DlpTheme.Border, DlpTheme.DisabledText, rounding: 0);
+    }
+
+    private static void ConfigureInput(KryptonTextBox textBox)
+    {
+        ApplyKryptonInputState(textBox.StateCommon, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonInputState(textBox.StateNormal, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonInputState(textBox.StateActive, DlpTheme.Surface, DlpTheme.AccentInteractive, DlpTheme.TextPrimary, rounding: 0);
+        ApplyKryptonInputState(textBox.StateDisabled, DlpTheme.Bg, DlpTheme.Border, DlpTheme.DisabledText, rounding: 0);
+    }
+
+    private static void ConfigureComboBox(KryptonComboBox comboBox)
+    {
+        comboBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        comboBox.PaletteMode = PaletteMode.Custom;
+        comboBox.LocalCustomPalette = DlpComboPalette.Instance;
+        comboBox.DropButtonStyle = ButtonStyle.InputControl;
+        comboBox.Dock = DockStyle.Fill;
+        comboBox.Height = 40;
+        comboBox.Font = new Font(FontFamily, 9.5F);
+        comboBox.ForeColor = DlpTheme.TextPrimary;
+        ApplyKryptonInputState(comboBox.StateCommon.ComboBox, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary, rounding: 0);
+        comboBox.StateCommon.ComboBox.Content.Padding = new Padding(10, 3, 28, 3);
+        comboBox.StateCommon.DropBack.Color1 = DlpTheme.Bg;
+        comboBox.StateCommon.DropBack.Color2 = DlpTheme.Bg;
+        comboBox.StateCommon.DropBack.ColorStyle = PaletteColorStyle.Solid;
+        ApplyKryptonButtonState(comboBox.StateCommon.Item, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary, rounding: 0);
+    }
+
+    private static Control WrapComboWithChevron(KryptonComboBox comboBox)
+    {
+        const int chevronWidth = 28;
+
+        Panel host = new()
+        {
+            Dock = DockStyle.Fill,
+            BackColor = DlpTheme.Bg,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+
+        comboBox.Dock = DockStyle.Fill;
+        comboBox.Margin = Padding.Empty;
+
+        Label chevron = new()
+        {
+            Text = "\uE70D",
+            Font = new Font(IconFontFamily, 9F),
+            ForeColor = DlpTheme.TextMuted,
+            BackColor = Color.Transparent,
+            AutoSize = false,
+            Width = chevronWidth,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Cursor = Cursors.Hand,
+            TabStop = false
+        };
+
+        void LayoutChevron()
+        {
+            chevron.Height = host.Height;
+            chevron.Location = new Point(Math.Max(0, host.Width - chevronWidth), 0);
+            chevron.BringToFront();
+        }
+
+        void UpdateChevronColor()
+        {
+            chevron.ForeColor = comboBox.Enabled
+                ? comboBox.DroppedDown ? DlpTheme.TextPrimary : DlpTheme.TextMuted
+                : DlpTheme.DisabledText;
+        }
+
+        host.Controls.Add(comboBox);
+        host.Controls.Add(chevron);
+        host.Resize += (_, _) => LayoutChevron();
+        comboBox.EnabledChanged += (_, _) => UpdateChevronColor();
+        comboBox.DropDown += (_, _) => UpdateChevronColor();
+        comboBox.DropDownClosed += (_, _) => UpdateChevronColor();
+        chevron.MouseEnter += (_, _) =>
+        {
+            if (comboBox.Enabled)
+            {
+                chevron.ForeColor = DlpTheme.TextSecondary;
+            }
+        };
+        chevron.MouseLeave += (_, _) => UpdateChevronColor();
+        chevron.Click += (_, _) =>
+        {
+            if (comboBox.Enabled)
+            {
+                comboBox.DroppedDown = !comboBox.DroppedDown;
+            }
+        };
+
+        LayoutChevron();
+        UpdateChevronColor();
+        return host;
     }
 
     private static void ConfigureToggleSwitch(KryptonToggleSwitch toggle)
     {
-        toggle.Size = new Size(48, 26);
-        toggle.MinimumSize = new Size(48, 26);
-        toggle.MaximumSize = new Size(48, 26);
+        toggle.Size = new Size(48, 24);
+        toggle.MinimumSize = new Size(48, 24);
+        toggle.MaximumSize = new Size(54, 28);
         toggle.Cursor = Cursors.Hand;
-        toggle.BackColor = DlpTheme.Bg;
-        toggle.ForeColor = DlpTheme.TextPrimary;
-        toggle.ToggleSwitchValues.UseThemeColors = false;
+        toggle.Margin = Padding.Empty;
         toggle.ToggleSwitchValues.ShowText = false;
-        toggle.ToggleSwitchValues.OnlyShowColorOnKnob = false;
-        toggle.ToggleSwitchValues.EnableEmbossEffect = false;
-        toggle.ToggleSwitchValues.AnimateGradientEffect = false;
-        toggle.ToggleSwitchValues.EnableKnobGradient = false;
-        toggle.ToggleSwitchValues.OnColor = DlpTheme.AccentActive;
+        toggle.ToggleSwitchValues.UseThemeColors = false;
         toggle.ToggleSwitchValues.OffColor = DlpTheme.BorderStrong;
+        toggle.ToggleSwitchValues.OnColor = DlpTheme.AccentActive;
         toggle.ToggleSwitchValues.CornerRadius = 12;
-
-        ApplyKryptonToggleState(toggle.StateCommon, DlpTheme.BorderStrong, DlpTheme.BorderStrong, DlpTheme.TextPrimary);
-        ApplyKryptonToggleState(toggle.StateNormal, DlpTheme.BorderStrong, DlpTheme.BorderStrong, DlpTheme.TextPrimary);
-        ApplyKryptonToggleState(toggle.StateTracking, DlpTheme.SurfaceHover, DlpTheme.BorderStrong, DlpTheme.TextPrimary);
-        ApplyKryptonToggleState(toggle.StatePressed, DlpTheme.AccentActive, DlpTheme.AccentActive, DlpTheme.AccentText);
-        ApplyKryptonToggleState(toggle.StateDisabled, DlpTheme.Border, DlpTheme.Border, DlpTheme.DisabledText);
+        ApplyKryptonButtonState(toggle.StateCommon, DlpTheme.Surface, DlpTheme.Border, DlpTheme.TextPrimary, rounding: 12);
+        ApplyKryptonButtonState(toggle.StateTracking, DlpTheme.SurfaceHover, DlpTheme.BorderStrong, DlpTheme.TextPrimary, rounding: 12);
+        ApplyKryptonButtonState(toggle.StatePressed, DlpTheme.Muted, DlpTheme.AccentInteractive, DlpTheme.TextPrimary, rounding: 12);
+        ApplyKryptonButtonState(toggle.StateDisabled, DlpTheme.Surface, DlpTheme.Border, DlpTheme.DisabledText, rounding: 12);
     }
 
     private static void ApplyKryptonInputState(
         PaletteInputControlTripleRedirect state,
         Color backColor,
         Color borderColor,
-        Color textColor)
+        Color textColor,
+        float rounding)
     {
         state.Back.Color1 = backColor;
         state.Border.Color1 = borderColor;
         state.Border.Color2 = borderColor;
         state.Border.DrawBorders = PaletteDrawBorders.All;
-        state.Border.Rounding = 6F;
+        state.Border.Rounding = rounding;
         state.Border.Width = 1;
         state.Content.Color1 = textColor;
-        state.Content.Font = new Font("Segoe UI", 9.5F);
-        state.Content.Padding = new Padding(8, 5, 8, 5);
+        state.Content.Font = new Font(FontFamily, 9.5F);
+        state.Content.Padding = new Padding(10, 7, 10, 7);
     }
 
     private static void ApplyKryptonInputState(
         PaletteInputControlTripleStates state,
         Color backColor,
         Color borderColor,
-        Color textColor)
+        Color textColor,
+        float rounding)
     {
         state.Back.Color1 = backColor;
         state.Border.Color1 = borderColor;
         state.Border.Color2 = borderColor;
         state.Border.DrawBorders = PaletteDrawBorders.All;
-        state.Border.Rounding = 6F;
+        state.Border.Rounding = rounding;
         state.Border.Width = 1;
         state.Content.Color1 = textColor;
-        state.Content.Font = new Font("Segoe UI", 9.5F);
-        state.Content.Padding = new Padding(8, 5, 8, 5);
+        state.Content.Font = new Font(FontFamily, 9.5F);
+        state.Content.Padding = new Padding(10, 7, 10, 7);
     }
 
     private static void ApplyKryptonButtonState(
         KryptonButton button,
         Color backColor,
         Color borderColor,
-        Color textColor)
+        Color textColor,
+        float rounding,
+        Font? font = null)
     {
-        ApplyKryptonButtonState(button.StateCommon, backColor, borderColor, textColor);
-        ApplyKryptonButtonState(button.StateNormal, backColor, borderColor, textColor);
-        ApplyKryptonButtonState(button.OverrideFocus, backColor, DlpTheme.AccentInteractive, textColor);
+        ApplyKryptonButtonState(button.StateCommon, backColor, borderColor, textColor, rounding, font);
+        ApplyKryptonButtonState(button.StateNormal, backColor, borderColor, textColor, rounding, font);
+        ApplyKryptonButtonState(button.OverrideDefault, backColor, borderColor, textColor, rounding, font);
+        ApplyKryptonButtonState(button.OverrideFocus, backColor, DlpTheme.AccentInteractive, textColor, rounding, font);
     }
 
     private static void ApplyKryptonButtonState(
         PaletteTripleRedirect state,
         Color backColor,
         Color borderColor,
-        Color textColor)
+        Color textColor,
+        float rounding,
+        Font? font = null)
     {
         state.Back.Color1 = backColor;
         state.Back.Color2 = backColor;
         state.Border.Color1 = borderColor;
         state.Border.Color2 = borderColor;
         state.Border.DrawBorders = PaletteDrawBorders.All;
-        state.Border.Rounding = 6F;
+        state.Border.Rounding = rounding;
         state.Border.Width = 1;
         state.Content.ShortText.Color1 = textColor;
         state.Content.ShortText.Color2 = textColor;
-        state.Content.ShortText.Font = new Font("Segoe UI", 9.5F, FontStyle.Bold);
+        state.Content.ShortText.Font = font ?? new Font(FontFamily, 9.5F, FontStyle.Bold);
         state.Content.Padding = new Padding(0);
     }
 
@@ -816,52 +832,20 @@ internal sealed partial class DownloadForm
         PaletteTriple state,
         Color backColor,
         Color borderColor,
-        Color textColor)
+        Color textColor,
+        float rounding,
+        Font? font = null)
     {
         state.Back.Color1 = backColor;
         state.Back.Color2 = backColor;
         state.Border.Color1 = borderColor;
         state.Border.Color2 = borderColor;
         state.Border.DrawBorders = PaletteDrawBorders.All;
-        state.Border.Rounding = 6F;
+        state.Border.Rounding = rounding;
         state.Border.Width = 1;
         state.Content.ShortText.Color1 = textColor;
         state.Content.ShortText.Color2 = textColor;
-        state.Content.ShortText.Font = new Font("Segoe UI", 9.5F, FontStyle.Bold);
+        state.Content.ShortText.Font = font ?? new Font(FontFamily, 9.5F, FontStyle.Bold);
         state.Content.Padding = new Padding(0);
-    }
-
-    private static void ApplyKryptonToggleState(
-        PaletteTripleRedirect state,
-        Color backColor,
-        Color borderColor,
-        Color textColor)
-    {
-        state.Back.Color1 = backColor;
-        state.Back.Color2 = backColor;
-        state.Border.Color1 = borderColor;
-        state.Border.Color2 = borderColor;
-        state.Border.DrawBorders = PaletteDrawBorders.All;
-        state.Border.Rounding = 12F;
-        state.Border.Width = 1;
-        state.Content.ShortText.Color1 = textColor;
-        state.Content.ShortText.Color2 = textColor;
-    }
-
-    private static void ApplyKryptonToggleState(
-        PaletteTriple state,
-        Color backColor,
-        Color borderColor,
-        Color textColor)
-    {
-        state.Back.Color1 = backColor;
-        state.Back.Color2 = backColor;
-        state.Border.Color1 = borderColor;
-        state.Border.Color2 = borderColor;
-        state.Border.DrawBorders = PaletteDrawBorders.All;
-        state.Border.Rounding = 12F;
-        state.Border.Width = 1;
-        state.Content.ShortText.Color1 = textColor;
-        state.Content.ShortText.Color2 = textColor;
     }
 }

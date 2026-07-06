@@ -46,7 +46,7 @@ internal static class BuiltInMediaDownloader
         statusChanged?.Invoke("Downloading with DLP", 0);
         await DownloadFileAsync(url, outputPath, referer, userAgent, 0, 100, log, statusChanged);
         log($"Built-in media download completed: {outputPath}");
-        statusChanged?.Invoke("Done - saved in Downloads\\DLP", 100);
+        statusChanged?.Invoke("Done - saved", 100);
         return true;
     }
 

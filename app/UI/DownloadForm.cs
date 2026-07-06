@@ -5,42 +5,57 @@ using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using Krypton.Toolkit;
 
-internal sealed partial class DownloadForm : KryptonForm
+internal sealed partial class DownloadForm : Form
 {
     private static readonly Regex ProgressRegex = new(@"(?<percent>\d{1,3}(?:\.\d+)?)%", RegexOptions.Compiled);
 
-    private readonly string _url;
-    private readonly string? _audioUrl;
-    private readonly string? _fallbackUrl;
-    private readonly string _source;
-    private readonly string? _title;
+    private string _url;
+    private string? _audioUrl;
+    private string? _fallbackUrl;
+    private string _source;
+    private string? _title;
     private readonly string? _referer;
     private readonly string? _userAgent;
     private readonly string? _initialCookieBrowser;
-    private readonly string _downloadDirectory;
+    private string _downloadDirectory;
     private readonly string? _ytDlpPath;
     private readonly string? _ffmpegPath;
 
     private readonly Label _statusLabel = new();
     private readonly Panel _statusIndicator = new();
-    private readonly ProgressBar _progressBar = new();
-    private readonly KryptonButton _videoButton = new();
-    private readonly KryptonButton _audioButton = new();
+    private readonly TableLayoutPanel _progressPanel = new();
+    private readonly DlpProgressBar _progressBar = new();
+    private readonly Label _progressValueLabel = new();
+    private readonly KryptonTextBox _urlBox = new();
+    private readonly KryptonTextBox _savePathBox = new();
+    private readonly KryptonButton _linkButton = new();
+    private readonly KryptonButton _previewButton = new();
+    private readonly KryptonCheckButton _videoButton = new();
+    private readonly KryptonCheckButton _audioButton = new();
+    private readonly KryptonComboBox _qualitySelect = new();
+    private readonly KryptonComboBox _formatSelect = new();
+    private readonly KryptonButton _browseButton = new();
+    private readonly KryptonButton _downloadButton = new();
+    private readonly KryptonButton _settingsButton = new();
     private readonly KryptonButton _openFolderButton = new();
     private readonly KryptonButton _updateButton = new();
+    private readonly KryptonButton _cancelButton = new();
     private readonly KryptonButton _openLogButton = new();
     private readonly KryptonToggleSwitch _embedSubsSwitch = new();
     private readonly KryptonToggleSwitch _cookiesSwitch = new();
     private readonly KryptonComboBox _browserSelect = new();
     private readonly NotifyIcon _notifyIcon = new();
     private readonly ContextMenuStrip _trayMenu = new();
-    private TableLayoutPanel _browserRow = new();
-    private Label _browserSettingLabel = new();
+    private readonly ToolTip _toolTips = new();
+    private Label _detectedKindLabel = new();
+    private Label _detectedTitleLabel = new();
+    private Label _detectedDurationLabel = new();
 
     private Process? _downloadProcess;
     private bool _isPreparingDownload;
     private bool _isUpdatingApp;
     private bool _isUpdatingYtDlp;
+    private bool _isProbing;
     private bool _hasShownTrayNotice;
 
     private enum StatusTone
@@ -50,6 +65,17 @@ internal sealed partial class DownloadForm : KryptonForm
         Success,
         Warning,
         Error
+    }
+
+    private enum DownloadKind
+    {
+        Video,
+        Audio
+    }
+
+    private sealed record QualityChoice(string Label, int? Height)
+    {
+        public override string ToString() => Label;
     }
 
     public DownloadForm(
@@ -75,8 +101,11 @@ internal sealed partial class DownloadForm : KryptonForm
         _ffmpegPath = ToolResolver.ResolveToolPath("DLP_FFMPEG_PATH", "ffmpeg.exe");
 
         BuildUi();
+        ConfigureBrowserSelect();
+        PopulateQualityOptions([]);
+        PopulateFormatOptions(DownloadKind.Video);
         ApplyInitialCookieBrowser();
-        SetReadyState();
+        SetInitialSourceState();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -91,6 +120,7 @@ internal sealed partial class DownloadForm : KryptonForm
     {
         _notifyIcon.Dispose();
         _trayMenu.Dispose();
+        _toolTips.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -114,210 +144,257 @@ internal sealed partial class DownloadForm : KryptonForm
         BringToFront();
         Activate();
 
-        BeginInvoke(new Action(() => TopMost = false));
+        BeginInvoke(new Action(async () =>
+        {
+            TopMost = false;
+
+            if (HasUsableSource())
+            {
+                _downloadButton.Focus();
+                await ProbeSourceAsync();
+            }
+            else
+            {
+                _urlBox.Focus();
+            }
+        }));
     }
-    private void SetReadyState()
+
+    private void SetInitialSourceState()
     {
+        _urlBox.Text = _url;
+        _savePathBox.Text = ShortDisplayPath(_downloadDirectory);
+        SetDetectedMetadata(
+            !string.IsNullOrWhiteSpace(_audioUrl) ? "Video" : "Video",
+            _title,
+            null);
+
         if (_ytDlpPath is null)
         {
-            _videoButton.Enabled = false;
-            _audioButton.Enabled = false;
+            _downloadButton.Enabled = false;
             SetStatus("yt-dlp.exe was not found", 0);
             return;
         }
 
-        SetStatus("Choose video or audio", 0);
+        if (HasUsableSource())
+        {
+            SetStatus("Ready to read link details", 0);
+        }
+        else
+        {
+            SetStatus("Paste a link to begin", 0);
+        }
+
+        SetIdleButtons();
     }
 
-    private async Task StartDownloadAsync(DownloadKind kind)
+    private async Task StartDownloadAsync()
     {
-        if (_downloadProcess is not null || _ytDlpPath is null || _isPreparingDownload || _isUpdatingApp)
+        if (_downloadProcess is not null || _ytDlpPath is null || _isPreparingDownload || _isUpdatingApp || _isProbing)
         {
             return;
         }
 
-        using CryptAccessScope folderAccess = Crypt.BeginOperationAccess(
-            "manual-download",
-            CryptAccessMode.Modify);
-        Directory.CreateDirectory(_downloadDirectory);
-        Program.Log($"Starting {kind.ToString().ToLowerInvariant()} download from {_source}: {_url}");
-        SetPreparingDownloadState();
-
-        bool createDuplicateCopy = false;
-
-        if (TitleDuplicateDetector.TryFindExistingDownload(_downloadDirectory, _title, out string? existingFilePath)
-            && existingFilePath is not null
-            && !ConfirmDuplicateDownload(existingFilePath))
+        if (!TryApplySourceFromInput(out string downloadUrl))
         {
-            SetStatus("Already downloaded", 0);
-            Program.Log($"Download skipped existing title '{_title}': {existingFilePath}");
-            _isPreparingDownload = false;
-            SetIdleButtons();
+            SetStatus("Paste a valid HTTPS link", 0);
             return;
         }
 
-        createDuplicateCopy = existingFilePath is not null;
-
-        YtDlpDownloadOptions options = GetYtDlpOptions();
-
-        if (kind == DownloadKind.Video && !string.IsNullOrWhiteSpace(_audioUrl))
-        {
-            await StartPairedVideoDownloadAsync(createDuplicateCopy, options);
-            return;
-        }
-
-        string downloadUrl = kind == DownloadKind.Audio && !string.IsNullOrWhiteSpace(_audioUrl)
-            ? _audioUrl
-            : _url;
-
-        if (await TryInstagramCapturedFallbackFirstAsync(kind, downloadUrl, createDuplicateCopy))
-        {
-            return;
-        }
-
-        if (await TryBuiltInDirectFirstAsync(kind, downloadUrl, createDuplicateCopy))
-        {
-            return;
-        }
-
-        if (options.UseCookies)
-        {
-            Program.Log($"Using browser cookies for yt-dlp: {options.Browser}");
-        }
-
-        IReadOnlyList<YtDlpDownloadAttempt> attempts = YtDlpSites.GetDownloadAttempts(
-            downloadUrl,
-            _referer,
-            options.UseCookies ? options.Browser : null);
-        SetBusyState(kind);
+        DownloadKind kind = _audioButton.Checked ? DownloadKind.Audio : DownloadKind.Video;
+        string downloadDirectory = ResolveSelectedDownloadDirectory();
+        CryptAccessScope? folderAccess = null;
 
         try
         {
-            _isPreparingDownload = false;
+            folderAccess = BeginDownloadFolderAccess(downloadDirectory, out downloadDirectory);
+            Directory.CreateDirectory(downloadDirectory);
+            Program.Log($"Starting {kind.ToString().ToLowerInvariant()} download from {_source}: {downloadUrl}");
+            SetPreparingDownloadState();
 
-            for (int attemptIndex = 0; attemptIndex < attempts.Count; attemptIndex++)
+            bool createDuplicateCopy = false;
+
+            if (TitleDuplicateDetector.TryFindExistingDownload(downloadDirectory, _title, out string? existingFilePath)
+                && existingFilePath is not null
+                && !ConfirmDuplicateDownload(existingFilePath))
             {
-                YtDlpDownloadAttempt attempt = attempts[attemptIndex];
-                YtDlpDownloadOptions attemptOptions = attempt.SuppressCookies
-                    ? options with { UseCookies = false }
-                    : options;
-                ProcessStartInfo startInfo = new()
+                SetStatus("Already downloaded", 0);
+                Program.Log($"Download skipped existing title '{_title}': {existingFilePath}");
+                _isPreparingDownload = false;
+                SetIdleButtons();
+                return;
+            }
+
+            createDuplicateCopy = existingFilePath is not null;
+
+            YtDlpDownloadOptions options = GetYtDlpOptions() with { SaveDirectory = downloadDirectory };
+
+            if (kind == DownloadKind.Video && !string.IsNullOrWhiteSpace(_audioUrl))
+            {
+                await StartPairedVideoDownloadAsync(downloadDirectory, createDuplicateCopy, options);
+                return;
+            }
+
+            string effectiveDownloadUrl = kind == DownloadKind.Audio && !string.IsNullOrWhiteSpace(_audioUrl)
+                ? _audioUrl
+                : downloadUrl;
+
+            if (await TryInstagramCapturedFallbackFirstAsync(kind, effectiveDownloadUrl, downloadDirectory, createDuplicateCopy))
+            {
+                return;
+            }
+
+            if (await TryBuiltInDirectFirstAsync(kind, effectiveDownloadUrl, downloadDirectory, createDuplicateCopy))
+            {
+                return;
+            }
+
+            if (options.UseCookies)
+            {
+                Program.Log($"Using browser cookies for yt-dlp: {options.Browser}");
+            }
+
+            IReadOnlyList<YtDlpDownloadAttempt> attempts = YtDlpSites.GetDownloadAttempts(
+                effectiveDownloadUrl,
+                _referer,
+                options.UseCookies ? options.Browser : null);
+            SetBusyState(kind);
+
+            try
+            {
+                _isPreparingDownload = false;
+
+                for (int attemptIndex = 0; attemptIndex < attempts.Count; attemptIndex++)
                 {
-                    FileName = _ytDlpPath,
-                    WorkingDirectory = _downloadDirectory,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardOutputEncoding = Encoding.UTF8,
-                    StandardErrorEncoding = Encoding.UTF8
-                };
-
-                AddCommonArguments(startInfo, createDuplicateCopy, attempt);
-
-                if (kind == DownloadKind.Video)
-                {
-                    YtDlpArgumentBuilder.AddVideoArguments(startInfo, attemptOptions, downloadUrl, attempt);
-                }
-                else
-                {
-                    YtDlpArgumentBuilder.AddAudioArguments(startInfo, attemptOptions, downloadUrl);
-                }
-
-                attempt.AddTo(startInfo);
-                startInfo.ArgumentList.Add(downloadUrl);
-
-                using Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
-                YtDlpRunDiagnostics diagnostics = new(
-                    downloadUrl,
-                    _referer,
-                    _userAgent,
-                    attemptOptions.UseCookies ? attemptOptions.Browser : null,
-                    kind == DownloadKind.Video ? _fallbackUrl : null);
-                _downloadProcess = process;
-
-                Program.Log($"yt-dlp attempt {attemptIndex + 1}/{attempts.Count}: {attempt.Name}");
-                diagnostics.LogStart(_ytDlpPath, Program.Log, startInfo);
-                process.OutputDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
-                process.ErrorDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
-
-                try
-                {
-                    process.Start();
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-
-                    await process.WaitForExitAsync();
-                    process.WaitForExit();
-
-                    if (process.ExitCode == 0)
+                    YtDlpDownloadAttempt attempt = attempts[attemptIndex];
+                    YtDlpDownloadOptions attemptOptions = attempt.SuppressCookies
+                        ? options with { UseCookies = false }
+                        : options;
+                    ProcessStartInfo startInfo = new()
                     {
-                        SetStatus("Done - saved in Downloads\\DLP", 100);
-                        Program.Log($"{kind} download completed.");
+                        FileName = _ytDlpPath,
+                        WorkingDirectory = downloadDirectory,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        StandardOutputEncoding = Encoding.UTF8,
+                        StandardErrorEncoding = Encoding.UTF8
+                    };
+
+                    AddCommonArguments(startInfo, downloadDirectory, createDuplicateCopy, attempt);
+
+                    if (kind == DownloadKind.Video)
+                    {
+                        YtDlpArgumentBuilder.AddVideoArguments(startInfo, attemptOptions, effectiveDownloadUrl, attempt);
+                    }
+                    else
+                    {
+                        YtDlpArgumentBuilder.AddAudioArguments(startInfo, attemptOptions, effectiveDownloadUrl);
+                    }
+
+                    attempt.AddTo(startInfo);
+                    startInfo.ArgumentList.Add(effectiveDownloadUrl);
+
+                    using Process process = new() { StartInfo = startInfo, EnableRaisingEvents = true };
+                    YtDlpRunDiagnostics diagnostics = new(
+                        effectiveDownloadUrl,
+                        _referer,
+                        _userAgent,
+                        attemptOptions.UseCookies ? attemptOptions.Browser : null,
+                        kind == DownloadKind.Video ? _fallbackUrl : null);
+                    SetDownloadProcess(process);
+
+                    Program.Log($"yt-dlp attempt {attemptIndex + 1}/{attempts.Count}: {attempt.Name}");
+                    diagnostics.LogStart(_ytDlpPath, Program.Log, startInfo);
+                    process.OutputDataReceived += (_, e) => HandleYtDlpLine(e.Data);
+                    process.ErrorDataReceived += (_, e) => diagnostics.LogLine(e.Data, Program.Log);
+
+                    try
+                    {
+                        process.Start();
+                        process.BeginOutputReadLine();
+                        process.BeginErrorReadLine();
+
+                        await process.WaitForExitAsync();
+                        process.WaitForExit();
+
+                        if (process.ExitCode == 0)
+                        {
+                            SetStatus("Done - saved", 100);
+                            Program.Log($"{kind} download completed.");
+                            return;
+                        }
+
+                        SetDownloadProcess(null);
+                        diagnostics.LogFailure(process.ExitCode, Program.Log);
+
+                        if (attemptIndex < attempts.Count - 1)
+                        {
+                            SetStatus($"Retrying {attempts[attemptIndex + 1].Name}", 0);
+                            Program.Log($"Retrying yt-dlp with attempt: {attempts[attemptIndex + 1].Name}");
+                            continue;
+                        }
+
+                        if (await TryBuiltInFallbackAsync(
+                            kind,
+                            GetBuiltInFallbackUrl(kind, effectiveDownloadUrl),
+                            GetBuiltInFallbackAudioUrl(kind, null),
+                            downloadDirectory,
+                            createDuplicateCopy))
+                        {
+                            return;
+                        }
+
+                        SetStatus("Download failed - check DLP.log", 0);
+                        Program.Log($"{kind} download failed with exit code {process.ExitCode}.");
                         return;
                     }
-
-                    _downloadProcess = null;
-                    diagnostics.LogFailure(process.ExitCode, Program.Log);
-
-                    if (attemptIndex < attempts.Count - 1)
+                    catch (Exception ex)
                     {
-                        SetStatus($"Retrying {attempts[attemptIndex + 1].Name}", 0);
-                        Program.Log($"Retrying yt-dlp with attempt: {attempts[attemptIndex + 1].Name}");
-                        continue;
-                    }
+                        SetDownloadProcess(null);
 
-                    if (await TryBuiltInFallbackAsync(
-                        kind,
-                        GetBuiltInFallbackUrl(kind, downloadUrl),
-                        GetBuiltInFallbackAudioUrl(kind, null),
-                        createDuplicateCopy))
-                    {
+                        if (attemptIndex < attempts.Count - 1)
+                        {
+                            SetStatus($"Retrying {attempts[attemptIndex + 1].Name}", 0);
+                            Program.Log($"Download attempt failed: {ex.Message}");
+                            Program.Log($"Retrying yt-dlp with attempt: {attempts[attemptIndex + 1].Name}");
+                            continue;
+                        }
+
+                        if (await TryBuiltInFallbackAsync(
+                            kind,
+                            GetBuiltInFallbackUrl(kind, effectiveDownloadUrl),
+                            GetBuiltInFallbackAudioUrl(kind, null),
+                            downloadDirectory,
+                            createDuplicateCopy))
+                        {
+                            return;
+                        }
+
+                        SetStatus("Could not start download - check DLP.log", 0);
+                        Program.Log($"Download start failed: {ex}");
                         return;
                     }
-
-                    SetStatus("Download failed - check DLP.log", 0);
-                    Program.Log($"{kind} download failed with exit code {process.ExitCode}.");
-                    return;
                 }
-                catch (Exception ex)
-                {
-                    _downloadProcess = null;
-
-                    if (attemptIndex < attempts.Count - 1)
-                    {
-                        SetStatus($"Retrying {attempts[attemptIndex + 1].Name}", 0);
-                        Program.Log($"Download attempt failed: {ex.Message}");
-                        Program.Log($"Retrying yt-dlp with attempt: {attempts[attemptIndex + 1].Name}");
-                        continue;
-                    }
-
-                    if (await TryBuiltInFallbackAsync(
-                        kind,
-                        GetBuiltInFallbackUrl(kind, downloadUrl),
-                        GetBuiltInFallbackAudioUrl(kind, null),
-                        createDuplicateCopy))
-                    {
-                        return;
-                    }
-
-                    SetStatus("Could not start download - check DLP.log", 0);
-                    Program.Log($"Download start failed: {ex}");
-                    return;
-                }
+            }
+            finally
+            {
+                SetDownloadProcess(null);
+                _isPreparingDownload = false;
+                SetIdleButtons();
             }
         }
         finally
         {
-            _downloadProcess = null;
-            _isPreparingDownload = false;
-            SetIdleButtons();
+            folderAccess?.Dispose();
         }
     }
 
     private async Task<bool> TryBuiltInDirectFirstAsync(
         DownloadKind kind,
         string downloadUrl,
+        string downloadDirectory,
         bool createDuplicateCopy)
     {
         if (YtDlpPlatformPolicy.ShouldPreferYtDlp(downloadUrl, _referer)
@@ -342,7 +419,7 @@ internal sealed partial class DownloadForm : KryptonForm
             bool success = await BuiltInMediaDownloader.DownloadAsync(
                 downloadUrl,
                 null,
-                _downloadDirectory,
+                downloadDirectory,
                 _title,
                 _referer,
                 _userAgent,
@@ -350,11 +427,11 @@ internal sealed partial class DownloadForm : KryptonForm
                 createDuplicateCopy,
                 Program.Log,
                 SetStatus,
-                process => _downloadProcess = process);
+                SetDownloadProcess);
 
             if (success)
             {
-                SetStatus("Done - saved in Downloads\\DLP", 100);
+                SetStatus("Done - saved", 100);
                 return true;
             }
         }
@@ -364,7 +441,7 @@ internal sealed partial class DownloadForm : KryptonForm
         }
         finally
         {
-            _downloadProcess = null;
+            SetDownloadProcess(null);
         }
 
         SetStatus("Trying yt-dlp", 0);
@@ -374,6 +451,7 @@ internal sealed partial class DownloadForm : KryptonForm
     private async Task<bool> TryInstagramCapturedFallbackFirstAsync(
         DownloadKind kind,
         string downloadUrl,
+        string downloadDirectory,
         bool createDuplicateCopy)
     {
         if (kind != DownloadKind.Video
@@ -394,7 +472,7 @@ internal sealed partial class DownloadForm : KryptonForm
             bool success = await BuiltInMediaDownloader.DownloadAsync(
                 _fallbackUrl,
                 null,
-                _downloadDirectory,
+                downloadDirectory,
                 _title,
                 _referer,
                 _userAgent,
@@ -402,11 +480,11 @@ internal sealed partial class DownloadForm : KryptonForm
                 createDuplicateCopy,
                 Program.Log,
                 SetStatus,
-                process => _downloadProcess = process);
+                SetDownloadProcess);
 
             if (success)
             {
-                SetStatus("Done - saved in Downloads\\DLP", 100);
+                SetStatus("Done - saved", 100);
                 return true;
             }
 
@@ -418,14 +496,17 @@ internal sealed partial class DownloadForm : KryptonForm
         }
         finally
         {
-            _downloadProcess = null;
+            SetDownloadProcess(null);
         }
 
         SetStatus("Trying yt-dlp", 0);
         return false;
     }
 
-    private async Task StartPairedVideoDownloadAsync(bool createDuplicateCopy, YtDlpDownloadOptions options)
+    private async Task StartPairedVideoDownloadAsync(
+        string downloadDirectory,
+        bool createDuplicateCopy,
+        YtDlpDownloadOptions options)
     {
         if (_ytDlpPath is null || string.IsNullOrWhiteSpace(_audioUrl))
         {
@@ -453,7 +534,7 @@ internal sealed partial class DownloadForm : KryptonForm
             int exitCode = await DirectMediaPairDownloader.DownloadAndMergeAsync(
                 _url,
                 _audioUrl,
-                _downloadDirectory,
+                downloadDirectory,
                 _title,
                 _ytDlpPath,
                 _ffmpegPath,
@@ -463,16 +544,17 @@ internal sealed partial class DownloadForm : KryptonForm
                 createDuplicateCopy,
                 Program.Log,
                 SetStatus,
-                process => _downloadProcess = process);
+                SetDownloadProcess);
 
             if (exitCode == 0)
             {
-                SetStatus("Done - saved in Downloads\\DLP", 100);
+                SetStatus("Done - saved", 100);
             }
             else if (await TryBuiltInFallbackAsync(
                 DownloadKind.Video,
                 GetBuiltInFallbackUrl(DownloadKind.Video, _url),
                 GetBuiltInFallbackAudioUrl(DownloadKind.Video, _audioUrl),
+                downloadDirectory,
                 createDuplicateCopy))
             {
                 return;
@@ -489,7 +571,7 @@ internal sealed partial class DownloadForm : KryptonForm
         }
         finally
         {
-            _downloadProcess = null;
+            SetDownloadProcess(null);
             _isPreparingDownload = false;
             SetIdleButtons();
         }
@@ -499,6 +581,7 @@ internal sealed partial class DownloadForm : KryptonForm
         DownloadKind kind,
         string downloadUrl,
         string? audioUrl,
+        string downloadDirectory,
         bool createDuplicateCopy)
     {
         if (!BuiltInMediaDownloader.CanDownload(downloadUrl, audioUrl))
@@ -528,7 +611,7 @@ internal sealed partial class DownloadForm : KryptonForm
             bool success = await BuiltInMediaDownloader.DownloadAsync(
                 downloadUrl,
                 audioUrl,
-                _downloadDirectory,
+                downloadDirectory,
                 _title,
                 _referer,
                 _userAgent,
@@ -536,9 +619,9 @@ internal sealed partial class DownloadForm : KryptonForm
                 createDuplicateCopy,
                 Program.Log,
                 SetStatus,
-                process => _downloadProcess = process);
+                SetDownloadProcess);
 
-            SetStatus(success ? "Done - saved in Downloads\\DLP" : "DLP direct download failed", success ? 100 : 0);
+            SetStatus(success ? "Done - saved" : "DLP direct download failed", success ? 100 : 0);
             return true;
         }
         catch (Exception ex)
@@ -549,7 +632,7 @@ internal sealed partial class DownloadForm : KryptonForm
         }
         finally
         {
-            _downloadProcess = null;
+            SetDownloadProcess(null);
         }
     }
 
@@ -603,6 +686,7 @@ internal sealed partial class DownloadForm : KryptonForm
 
     private void AddCommonArguments(
         ProcessStartInfo startInfo,
+        string downloadDirectory,
         bool createDuplicateCopy,
         YtDlpDownloadAttempt? attempt)
     {
@@ -615,7 +699,7 @@ internal sealed partial class DownloadForm : KryptonForm
         startInfo.ArgumentList.Add("--windows-filenames");
         YtDlpNetworkArgumentBuilder.AddNetworkArguments(startInfo, _referer, _userAgent);
         startInfo.ArgumentList.Add("-P");
-        startInfo.ArgumentList.Add(_downloadDirectory);
+        startInfo.ArgumentList.Add(downloadDirectory);
         startInfo.ArgumentList.Add("-o");
         startInfo.ArgumentList.Add(createDuplicateCopy
             ? $"%(title).200B [%(id)s] copy-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.%(ext)s"
@@ -648,26 +732,156 @@ internal sealed partial class DownloadForm : KryptonForm
         SetStatus($"Downloading {value}%", value);
     }
 
+    private async Task ProbeSourceAsync()
+    {
+        if (_ytDlpPath is null)
+        {
+            SetStatus("yt-dlp.exe was not found", 0);
+            return;
+        }
+
+        if (!TryApplySourceFromInput(out string sourceUrl))
+        {
+            SetStatus("Paste a valid HTTPS link", 0);
+            return;
+        }
+
+        if (_isProbing || _downloadProcess is not null)
+        {
+            return;
+        }
+
+        _isProbing = true;
+        SetOptionControlsEnabled(false);
+        SetStatus("Fetching link details", 0);
+
+        try
+        {
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(35));
+            MediaProbeResult result = await MediaProbeService.ProbeAsync(
+                _ytDlpPath,
+                sourceUrl,
+                _referer,
+                _userAgent,
+                _cookiesSwitch.Checked ? CookieBrowserCatalog.Normalize(_browserSelect.SelectedItem?.ToString()) : null,
+                timeout.Token);
+
+            _title = result.Title;
+            SetDetectedMetadata(result.MediaType, result.Title, result.Duration);
+            PopulateQualityOptions(result.VideoHeights);
+            SetStatus("Ready to download", 0);
+        }
+        catch (Exception ex)
+        {
+            Program.Log($"Link details failed: {ex.Message}");
+            SetDetectedMetadata("Link", _title ?? "Details unavailable", null);
+            PopulateQualityOptions([]);
+            SetStatus("Details unavailable", 0);
+        }
+        finally
+        {
+            _isProbing = false;
+            SetIdleButtons();
+        }
+    }
+
+    private void SelectDownloadKind(DownloadKind kind)
+    {
+        bool video = kind == DownloadKind.Video;
+        _videoButton.Checked = video;
+        _audioButton.Checked = !video;
+        PopulateFormatOptions(kind);
+        _qualitySelect.Enabled = video && _downloadButton.Enabled;
+        SetStatus(video ? "Video selected" : "Audio selected", 0);
+    }
+
+    private void PopulateQualityOptions(IReadOnlyList<int> heights)
+    {
+        _qualitySelect.BeginUpdate();
+        _qualitySelect.Items.Clear();
+
+        if (heights.Count > 0)
+        {
+            for (int index = 0; index < heights.Count; index++)
+            {
+                int height = heights[index];
+                string label = index == 0 ? $"{height}p (Best)" : $"{height}p";
+                _qualitySelect.Items.Add(new QualityChoice(label, height));
+            }
+        }
+
+        _qualitySelect.Items.Add(new QualityChoice("Best available", null));
+        _qualitySelect.SelectedIndex = 0;
+        _qualitySelect.EndUpdate();
+    }
+
+    private void PopulateFormatOptions(DownloadKind kind)
+    {
+        string selected = GetSelectedFormat();
+        _formatSelect.BeginUpdate();
+        _formatSelect.Items.Clear();
+
+        string[] formats = kind == DownloadKind.Video
+            ? ["MP4", "MKV", "WEBM"]
+            : ["MP3", "M4A", "OPUS", "WAV"];
+
+        foreach (string format in formats)
+        {
+            _formatSelect.Items.Add(format);
+        }
+
+        int selectedIndex = Array.FindIndex(formats, format => string.Equals(format, selected, StringComparison.OrdinalIgnoreCase));
+        _formatSelect.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
+        _formatSelect.EndUpdate();
+    }
+
+    private int? GetSelectedQualityHeight()
+    {
+        return _qualitySelect.SelectedItem is QualityChoice choice ? choice.Height : null;
+    }
+
+    private string GetSelectedFormat()
+    {
+        return _formatSelect.SelectedItem?.ToString() ?? (_audioButton.Checked ? "MP3" : "MP4");
+    }
+
+    private void SetDetectedMetadata(string mediaType, string? title, TimeSpan? duration)
+    {
+        _detectedKindLabel.Text = $"Detected: {mediaType}";
+        _detectedTitleLabel.Text = $"Title: {Shorten(string.IsNullOrWhiteSpace(title) ? "Waiting for link" : title, 44)}";
+        _detectedDurationLabel.Text = $"Duration: {FormatDuration(duration)}";
+    }
+
+    private static string FormatDuration(TimeSpan? duration)
+    {
+        if (duration is null)
+        {
+            return "--:--";
+        }
+
+        return duration.Value.TotalHours >= 1
+            ? duration.Value.ToString(@"hh\:mm\:ss")
+            : duration.Value.ToString(@"mm\:ss");
+    }
+
     private void SetBusyState(DownloadKind kind)
     {
-        _videoButton.Enabled = false;
-        _audioButton.Enabled = false;
+        _downloadButton.Enabled = false;
         _updateButton.Enabled = false;
+        _settingsButton.Enabled = false;
         SetOptionControlsEnabled(false);
-        _progressBar.Visible = true;
-        _progressBar.Value = 0;
-        SetStatus(kind == DownloadKind.Video ? "Downloading best video" : "Downloading best audio", 0);
+        UpdateProgress(0);
+        SetStatus(kind == DownloadKind.Video ? "Downloading video" : "Downloading audio", 0);
     }
 
     private void SetPreparingDownloadState()
     {
         _isPreparingDownload = true;
-        _videoButton.Enabled = false;
-        _audioButton.Enabled = false;
+        _downloadButton.Enabled = false;
         _updateButton.Enabled = false;
+        _settingsButton.Enabled = false;
         SetOptionControlsEnabled(false);
-        _progressBar.Visible = false;
-        _progressBar.Value = 0;
+        UpdateProgress(0);
         SetStatus("Preparing download", 0);
     }
 
@@ -676,13 +890,18 @@ internal sealed partial class DownloadForm : KryptonForm
         bool canRunAppTools = !_isUpdatingApp
             && !_isUpdatingYtDlp
             && !_isPreparingDownload
+            && !_isProbing
             && _downloadProcess is null;
-        bool canRunYtDlp = _ytDlpPath is not null && canRunAppTools;
+        bool hasSource = HasUsableSource();
+        bool canRunYtDlp = _ytDlpPath is not null && canRunAppTools && hasSource;
 
-        _videoButton.Enabled = canRunYtDlp;
-        _audioButton.Enabled = canRunYtDlp;
+        _downloadButton.Enabled = canRunYtDlp;
+        _previewButton.Enabled = canRunAppTools && hasSource;
         _updateButton.Enabled = canRunAppTools;
-        SetOptionControlsEnabled(canRunYtDlp);
+        _settingsButton.Enabled = canRunAppTools;
+        SetOptionControlsEnabled(canRunAppTools);
+        _downloadButton.Enabled = canRunYtDlp;
+        UpdateStatusActions(ResolveStatusTone(_statusLabel.Text, _progressBar.Value));
     }
 
     private async Task UpdateAllAsync()
@@ -709,12 +928,11 @@ internal sealed partial class DownloadForm : KryptonForm
 
         bool installerStarted = false;
         _isUpdatingApp = true;
-        _videoButton.Enabled = false;
-        _audioButton.Enabled = false;
+        _downloadButton.Enabled = false;
         _updateButton.Enabled = false;
+        _settingsButton.Enabled = false;
         SetOptionControlsEnabled(false);
-        _progressBar.Visible = false;
-        _progressBar.Value = 0;
+        UpdateProgress(0);
         SetStatus("Checking app update", 0);
 
         try
@@ -737,7 +955,6 @@ internal sealed partial class DownloadForm : KryptonForm
             }
 
             SetStatus($"Downloading DLP {updateInfo.LatestVersion}", 0);
-            _progressBar.Visible = true;
 
             string installerPath = await AppUpdater.DownloadInstallerAsync(
                 updateInfo,
@@ -752,7 +969,6 @@ internal sealed partial class DownloadForm : KryptonForm
         }
         catch (Exception ex)
         {
-            _progressBar.Visible = false;
             SetStatus("App update failed check DLP.log", 0);
             Program.Log($"App update failed: {ex}");
         }
@@ -774,11 +990,10 @@ internal sealed partial class DownloadForm : KryptonForm
         }
 
         _isUpdatingYtDlp = true;
-        _videoButton.Enabled = false;
-        _audioButton.Enabled = false;
+        _downloadButton.Enabled = false;
         _updateButton.Enabled = false;
+        _settingsButton.Enabled = false;
         SetOptionControlsEnabled(false);
-        _progressBar.Visible = false;
         SetStatus("Updating yt-dlp", 0);
 
         ProcessStartInfo startInfo = new()
@@ -852,13 +1067,7 @@ internal sealed partial class DownloadForm : KryptonForm
             StatusTone tone = ResolveStatusTone(text, progress);
             _statusLabel.Text = FormatStatusText(text);
             ApplyStatusTone(tone);
-
-            if (progress > 0)
-            {
-                _progressBar.Visible = true;
-            }
-
-            _progressBar.Value = Math.Clamp(progress, _progressBar.Minimum, _progressBar.Maximum);
+            UpdateProgress(progress);
         }
 
         if (InvokeRequired)
@@ -874,17 +1083,52 @@ internal sealed partial class DownloadForm : KryptonForm
     {
         Color color = tone switch
         {
-            StatusTone.Busy => DlpTheme.Accent,
+            StatusTone.Busy => DlpTheme.AccentInteractive,
             StatusTone.Success => DlpTheme.Success,
             StatusTone.Warning => DlpTheme.Warning,
             StatusTone.Error => DlpTheme.Destructive,
             _ => DlpTheme.TextSecondary
         };
 
-        _statusIndicator.BackColor = color;
         _statusLabel.ForeColor = color;
-        _progressBar.ForeColor = tone == StatusTone.Error ? DlpTheme.Destructive : DlpTheme.AccentActive;
+        UpdateStatusActions(tone);
+    }
+
+    private void SetDownloadProcess(Process? process)
+    {
+        _downloadProcess = process;
+
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        void Apply() => UpdateStatusActions(ResolveStatusTone(_statusLabel.Text, _progressBar.Value));
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(Apply);
+            return;
+        }
+
+        Apply();
+    }
+
+    private void UpdateStatusActions(StatusTone tone)
+    {
+        bool canCancelDownload = tone == StatusTone.Busy && _downloadProcess is not null;
+
+        _cancelButton.Visible = canCancelDownload;
+        _cancelButton.Enabled = canCancelDownload;
         _openLogButton.Visible = tone == StatusTone.Error;
+    }
+
+    private void UpdateProgress(int progress)
+    {
+        int value = Math.Clamp(progress, 0, 100);
+
+        _progressBar.Value = value;
+        _progressValueLabel.Text = $"{value}%";
     }
 
     private static StatusTone ResolveStatusTone(string text, int progress)
@@ -907,7 +1151,8 @@ internal sealed partial class DownloadForm : KryptonForm
 
         if (normalized.Contains("already downloaded", StringComparison.Ordinal)
             || normalized.Contains("canceled", StringComparison.Ordinal)
-            || normalized.Contains("unavailable", StringComparison.Ordinal))
+            || normalized.Contains("unavailable", StringComparison.Ordinal)
+            || normalized.Contains("details unavailable", StringComparison.Ordinal))
         {
             return StatusTone.Warning;
         }
@@ -919,7 +1164,8 @@ internal sealed partial class DownloadForm : KryptonForm
             || normalized.Contains("installing", StringComparison.Ordinal)
             || normalized.Contains("updating", StringComparison.Ordinal)
             || normalized.Contains("retrying", StringComparison.Ordinal)
-            || normalized.Contains("trying", StringComparison.Ordinal))
+            || normalized.Contains("trying", StringComparison.Ordinal)
+            || normalized.Contains("fetching", StringComparison.Ordinal))
         {
             return StatusTone.Busy;
         }
@@ -957,15 +1203,77 @@ internal sealed partial class DownloadForm : KryptonForm
 
     private void OpenDownloadFolder()
     {
-        CryptStatus access = Crypt.UnlockForCurrentUser();
+        string selectedDirectory = ResolveSelectedDownloadDirectory();
 
-        ProcessStartInfo startInfo = new()
+        try
         {
-            FileName = access.Directory,
-            UseShellExecute = true
+            string directory = selectedDirectory;
+
+            if (IsDefaultDownloadDirectory(selectedDirectory))
+            {
+                CryptStatus access = Crypt.UnlockForCurrentUser();
+                directory = access.Directory;
+            }
+            else
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = directory,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Could not open folder", 0);
+            Program.Log($"Open folder failed: {ex}");
+        }
+    }
+
+    private void BrowseSaveDirectory()
+    {
+        using FolderBrowserDialog dialog = new()
+        {
+            Description = "Choose where DLP saves downloads",
+            SelectedPath = Directory.Exists(_downloadDirectory)
+                ? _downloadDirectory
+                : Program.GetDownloadDirectory(),
+            UseDescriptionForTitle = true
         };
 
-        Process.Start(startInfo);
+        if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath))
+        {
+            return;
+        }
+
+        _downloadDirectory = Path.GetFullPath(dialog.SelectedPath);
+        _savePathBox.Text = ShortDisplayPath(_downloadDirectory);
+        SetStatus("Save folder selected", 0);
+    }
+
+    private void PreviewSource()
+    {
+        if (!TryApplySourceFromInput(out string sourceUrl))
+        {
+            SetStatus("Paste a valid HTTPS link", 0);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = sourceUrl,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Could not open preview", 0);
+            Program.Log($"Preview open failed: {ex}");
+        }
     }
 
     private static void OpenLogFile()
@@ -992,20 +1300,121 @@ internal sealed partial class DownloadForm : KryptonForm
         }
     }
 
-    private static void OpenExternalUrl(string url)
+    private void OnSourceKeyDown(object? sender, KeyEventArgs e)
     {
-        try
+        if (e.KeyCode != Keys.Enter)
         {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = url,
-                UseShellExecute = true
-            });
+            return;
         }
-        catch (Exception ex)
+
+        e.SuppressKeyPress = true;
+        _ = ProbeSourceAsync();
+    }
+
+    private void OnSourceDragEnter(object? sender, DragEventArgs e)
+    {
+        if (e.Data?.GetDataPresent(DataFormats.Text) == true)
         {
-            Program.Log($"Open link failed: {ex}");
+            e.Effect = DragDropEffects.Copy;
+            return;
         }
+
+        e.Effect = DragDropEffects.None;
+    }
+
+    private void OnSourceDragDrop(object? sender, DragEventArgs e)
+    {
+        string? text = e.Data?.GetData(DataFormats.Text) as string;
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        _urlBox.Text = text.Trim();
+        _ = ProbeSourceAsync();
+    }
+
+    private bool TryApplySourceFromInput(out string sourceUrl)
+    {
+        sourceUrl = string.Empty;
+        string candidate = _urlBox.Text.Trim();
+
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out Uri? uri)
+            || !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        sourceUrl = uri.AbsoluteUri;
+        _url = sourceUrl;
+        _source = string.IsNullOrWhiteSpace(_source) ? "manual" : _source;
+        _urlBox.Text = sourceUrl;
+        return true;
+    }
+
+    private bool HasUsableSource()
+    {
+        string candidate = _urlBox.Text.Trim();
+        return Uri.TryCreate(candidate, UriKind.Absolute, out Uri? uri)
+            && string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string ResolveSelectedDownloadDirectory()
+    {
+        return string.IsNullOrWhiteSpace(_downloadDirectory)
+            ? Program.GetDownloadDirectory()
+            : Path.GetFullPath(_downloadDirectory);
+    }
+
+    private CryptAccessScope? BeginDownloadFolderAccess(string requestedDirectory, out string activeDirectory)
+    {
+        if (!IsDefaultDownloadDirectory(requestedDirectory))
+        {
+            activeDirectory = requestedDirectory;
+            return null;
+        }
+
+        CryptAccessScope scope = Crypt.BeginOperationAccess(
+            "manual-download",
+            CryptAccessMode.Modify);
+        activeDirectory = scope.DirectoryPath;
+        return scope;
+    }
+
+    private static bool IsDefaultDownloadDirectory(string directory)
+    {
+        static string Normalize(string value)
+        {
+            return Path.GetFullPath(value)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        return string.Equals(
+            Normalize(directory),
+            Normalize(Program.GetDownloadDirectory()),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ShortDisplayPath(string path)
+    {
+        string defaultDirectory = Program.GetDownloadDirectory();
+
+        if (IsDefaultDownloadDirectory(path))
+        {
+            return "Downloads\\DLP";
+        }
+
+        string fullPath = Path.GetFullPath(path);
+        string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        if (!string.IsNullOrWhiteSpace(userProfile)
+            && fullPath.StartsWith(userProfile, StringComparison.OrdinalIgnoreCase))
+        {
+            return "~" + fullPath[userProfile.Length..];
+        }
+
+        return fullPath;
     }
 
     private static string Shorten(string value, int maxLength)
@@ -1016,11 +1425,5 @@ internal sealed partial class DownloadForm : KryptonForm
         }
 
         return string.Concat(value.AsSpan(0, maxLength - 1), "...");
-    }
-
-    private enum DownloadKind
-    {
-        Video,
-        Audio
     }
 }

@@ -61,7 +61,15 @@ internal static class Program
 
         if (openApp)
         {
-            ShowReadyMessage();
+            ShowDownloadWindow(
+                url: string.Empty,
+                audioUrl: null,
+                fallbackUrl: null,
+                source: "manual",
+                title: null,
+                referer: null,
+                userAgent: null,
+                cookieBrowser: null);
             return 0;
         }
 
@@ -78,7 +86,15 @@ internal static class Program
 
         if (string.IsNullOrWhiteSpace(url))
         {
-            ShowReadyMessage();
+            ShowDownloadWindow(
+                url: string.Empty,
+                audioUrl: null,
+                fallbackUrl: null,
+                source: "manual",
+                title: null,
+                referer: null,
+                userAgent: null,
+                cookieBrowser: null);
             return 0;
         }
 
@@ -97,8 +113,7 @@ internal static class Program
                 cookieBrowser).GetAwaiter().GetResult();
         }
 
-        ApplicationConfiguration.Initialize();
-        Application.Run(new DownloadForm(
+        ShowDownloadWindow(
             url,
             audioUrl,
             fallbackUrl,
@@ -106,7 +121,7 @@ internal static class Program
             title,
             referer,
             userAgent,
-            cookieBrowser));
+            cookieBrowser);
 
         return 0;
     }
@@ -235,6 +250,28 @@ internal static class Program
             "DLP",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
+    }
+
+    private static void ShowDownloadWindow(
+        string url,
+        string? audioUrl,
+        string? fallbackUrl,
+        string source,
+        string? title,
+        string? referer,
+        string? userAgent,
+        string? cookieBrowser)
+    {
+        ApplicationConfiguration.Initialize();
+        Application.Run(new DownloadForm(
+            url,
+            audioUrl,
+            fallbackUrl,
+            source,
+            title,
+            referer,
+            userAgent,
+            cookieBrowser));
     }
 
     public static void Log(string message)
@@ -1279,7 +1316,7 @@ internal static class DirectMediaPairDownloader
                 return mergeExitCode;
             }
 
-            statusChanged?.Invoke("Done - saved in Downloads\\DLP", 100);
+            statusChanged?.Invoke("Done - saved", 100);
             log($"Paired media download completed: {outputPath}");
             return 0;
         }
@@ -2268,7 +2305,13 @@ internal static class AppUpdater
         [property: JsonPropertyName("digest")] string? Digest);
 }
 
-internal readonly record struct YtDlpDownloadOptions(bool EmbedSubs, bool UseCookies, string Browser);
+internal readonly record struct YtDlpDownloadOptions(
+    bool EmbedSubs,
+    bool UseCookies,
+    string Browser,
+    int? QualityHeight,
+    string Format,
+    string SaveDirectory);
 
 internal static class CookieBrowserCatalog
 {
@@ -2631,10 +2674,11 @@ internal static class YtDlpArgumentBuilder
         string url,
         YtDlpDownloadAttempt? attempt = null)
     {
+        string defaultSelector = BuildVideoFormatSelector(options.QualityHeight);
         startInfo.ArgumentList.Add("-f");
-        startInfo.ArgumentList.Add(attempt?.GetVideoFormatSelector("bv*+ba/b") ?? "bv*+ba/b");
+        startInfo.ArgumentList.Add(attempt?.GetVideoFormatSelector(defaultSelector) ?? defaultSelector);
         startInfo.ArgumentList.Add("--merge-output-format");
-        startInfo.ArgumentList.Add(options.EmbedSubs ? "mkv" : "mp4");
+        startInfo.ArgumentList.Add(NormalizeVideoFormat(options.Format));
 
         if (options.EmbedSubs)
         {
@@ -2651,11 +2695,47 @@ internal static class YtDlpArgumentBuilder
         startInfo.ArgumentList.Add("bestaudio/best");
         startInfo.ArgumentList.Add("-x");
         startInfo.ArgumentList.Add("--audio-format");
-        startInfo.ArgumentList.Add("mp3");
+        startInfo.ArgumentList.Add(NormalizeAudioFormat(options.Format));
         startInfo.ArgumentList.Add("--audio-quality");
         startInfo.ArgumentList.Add("0");
 
         AddCookieArguments(startInfo, options, url);
+    }
+
+    private static string BuildVideoFormatSelector(int? qualityHeight)
+    {
+        if (qualityHeight is not > 0)
+        {
+            return "bv*+ba/b";
+        }
+
+        int height = Math.Clamp(qualityHeight.Value, 144, 4320);
+        return $"bv*[height<={height}]+ba/b[height<={height}]/best[height<={height}]/bv*+ba/b";
+    }
+
+    private static string NormalizeVideoFormat(string? format)
+    {
+        string normalized = (format ?? "mp4").Trim().ToLowerInvariant();
+
+        return normalized switch
+        {
+            "mkv" => "mkv",
+            "webm" => "webm",
+            _ => "mp4"
+        };
+    }
+
+    private static string NormalizeAudioFormat(string? format)
+    {
+        string normalized = (format ?? "mp3").Trim().ToLowerInvariant();
+
+        return normalized switch
+        {
+            "m4a" => "m4a",
+            "opus" => "opus",
+            "wav" => "wav",
+            _ => "mp3"
+        };
     }
 
     private static void AddCookieArguments(ProcessStartInfo startInfo, YtDlpDownloadOptions options, string url)
