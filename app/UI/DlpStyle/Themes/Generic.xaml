@@ -1,0 +1,189 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:controls="clr-namespace:DLP.UI.DlpStyle.Controls">
+    <ResourceDictionary.MergedDictionaries>
+        <ResourceDictionary Source="/UI/DlpStyle/Styles/Icons.xaml" />
+        <ResourceDictionary Source="/UI/DlpStyle/Styles/Converters.xaml" />
+    </ResourceDictionary.MergedDictionaries>
+
+    <Style x:Key="TitleBarButtonStyle" TargetType="Button">
+        <Setter Property="Width" Value="46" />
+        <Setter Property="Height" Value="32" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="OverridesDefaultStyle" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Chrome"
+                            Background="{TemplateBinding Background}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Chrome" Property="Background" Value="{DynamicResource Layer2BackgroundBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Chrome" Property="Background" Value="{DynamicResource Layer3BackgroundBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="controls:TitleBar">
+        <Setter Property="Height" Value="32" />
+        <Setter Property="Background" Value="{DynamicResource WindowBackgroundBrush}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="controls:TitleBar">
+                    <Border Background="{TemplateBinding Background}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="92" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Margin="10,0,0,0"
+                                        VerticalAlignment="Center"
+                                        Orientation="Horizontal">
+                                <ContentControl VerticalAlignment="Center" Content="{TemplateBinding LeftContent}" />
+                                <TextBlock Margin="6,0,0,0"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                           FontSize="12"
+                                           Text="{TemplateBinding Title}" />
+                            </StackPanel>
+                            <Grid Grid.Column="1" HorizontalAlignment="Right">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="46" />
+                                    <ColumnDefinition Width="46" />
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="MinimizeButton"
+                                        Grid.Column="0"
+                                        Style="{StaticResource TitleBarButtonStyle}">
+                                    <Path Width="10"
+                                          Height="10"
+                                          Data="{StaticResource IconMinimize}"
+                                          Fill="{DynamicResource TextPrimaryBrush}"
+                                          Stretch="Uniform" />
+                                </Button>
+                                <Button x:Name="CloseButton"
+                                        Grid.Column="1"
+                                        Style="{StaticResource TitleBarButtonStyle}">
+                                    <Path Width="10"
+                                          Height="10"
+                                          Data="{StaticResource IconClose}"
+                                          Fill="{DynamicResource TextPrimaryBrush}"
+                                          Stretch="Uniform" />
+                                </Button>
+                            </Grid>
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="controls:ActionBarButton">
+        <Setter Property="Height" Value="36" />
+        <Setter Property="Padding" Value="12,0" />
+        <Setter Property="Background" Value="{DynamicResource Layer2BackgroundBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="controls:ActionBarButton">
+                    <Border x:Name="Border"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4">
+                        <StackPanel Margin="{TemplateBinding Padding}"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Orientation="Horizontal">
+                            <Path Width="{TemplateBinding IconWidth}"
+                                  Height="{TemplateBinding IconHeight}"
+                                  Margin="{TemplateBinding IconMargin}"
+                                  Data="{TemplateBinding IconPath}"
+                                  Fill="{TemplateBinding Foreground}"
+                                  Stretch="Uniform"
+                                  Visibility="{TemplateBinding ShowIcon, Converter={StaticResource BoolToVisibilityConverter}}" />
+                            <TextBlock VerticalAlignment="Center"
+                                       FontSize="{TemplateBinding TextFontSize}"
+                                       Foreground="{TemplateBinding Foreground}"
+                                       Text="{TemplateBinding Text}" />
+                        </StackPanel>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Border" Property="Background" Value="{DynamicResource Layer3BackgroundBrush}" />
+                            <Setter TargetName="Border" Property="BorderBrush" Value="{DynamicResource ControlBorderHoverBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="controls:ActionBarToggleButton">
+        <Setter Property="Height" Value="40" />
+        <Setter Property="Padding" Value="12,0" />
+        <Setter Property="Background" Value="{DynamicResource Layer2BackgroundBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="ToggledBrush" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="controls:ActionBarToggleButton">
+                    <Border x:Name="Border"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4">
+                        <Grid Margin="{TemplateBinding Padding}">
+                            <Path Width="{TemplateBinding IconWidth}"
+                                  Height="{TemplateBinding IconHeight}"
+                                  HorizontalAlignment="Left"
+                                  VerticalAlignment="Center"
+                                  Data="{TemplateBinding IconPath}"
+                                  Fill="{TemplateBinding Foreground}"
+                                  Stretch="Uniform"
+                                  Visibility="{TemplateBinding ShowIcon, Converter={StaticResource BoolToVisibilityConverter}}" />
+                            <TextBlock HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontSize="{TemplateBinding TextFontSize}"
+                                       Foreground="{TemplateBinding Foreground}"
+                                       Text="{TemplateBinding Text}" />
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Border" Property="Background" Value="{DynamicResource Layer3BackgroundBrush}" />
+                            <Setter TargetName="Border" Property="BorderBrush" Value="{DynamicResource ControlBorderHoverBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Border" Property="BorderBrush" Value="{Binding ToggledBrush, RelativeSource={RelativeSource TemplatedParent}}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.45" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>

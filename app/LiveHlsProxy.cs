@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Forms = System.Windows.Forms;
 
 internal sealed class LiveHlsProxy : IDisposable
 {
@@ -72,12 +73,13 @@ internal sealed class LiveHlsProxy : IDisposable
         if (vlc is null)
         {
             Program.Log("Live stream failed: VLC was not found");
-            ApplicationConfiguration.Initialize();
-            MessageBox.Show(
+            Forms.Application.EnableVisualStyles();
+            Forms.Application.SetCompatibleTextRenderingDefault(false);
+            Forms.MessageBox.Show(
                 "VLC was not found. Install VLC or add vlc.exe to PATH.",
                 "DLP",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
+                Forms.MessageBoxButtons.OK,
+                Forms.MessageBoxIcon.Warning);
             return 1;
         }
 

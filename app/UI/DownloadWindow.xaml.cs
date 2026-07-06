@@ -1,11 +1,26 @@
 using System.Diagnostics;
-using System.Drawing;
+using System.ComponentModel;
+using System.Reflection;
 using System.Text;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using Forms = System.Windows.Forms;
+using MessageBox = System.Windows.MessageBox;
+using MessageBoxButton = System.Windows.MessageBoxButton;
+using MessageBoxImage = System.Windows.MessageBoxImage;
+using MessageBoxResult = System.Windows.MessageBoxResult;
+using WpfBrush = System.Windows.Media.Brush;
+using WpfBrushes = System.Windows.Media.Brushes;
+using WpfButton = System.Windows.Controls.Button;
+using WpfComboBox = System.Windows.Controls.ComboBox;
+using WpfDragEventArgs = System.Windows.DragEventArgs;
+using WpfKey = System.Windows.Input.Key;
+using WpfKeyEventArgs = System.Windows.Input.KeyEventArgs;
 using System.Text.RegularExpressions;
-using System.Windows.Forms;
-using Krypton.Toolkit;
 
-internal sealed partial class DownloadForm : Form
+internal sealed partial class DownloadWindow : Window
 {
     private static readonly Regex ProgressRegex = new(@"(?<percent>\d{1,3}(?:\.\d+)?)%", RegexOptions.Compiled);
 
@@ -21,42 +36,21 @@ internal sealed partial class DownloadForm : Form
     private readonly string? _ytDlpPath;
     private readonly string? _ffmpegPath;
 
-    private readonly Label _statusLabel = new();
-    private readonly Panel _statusIndicator = new();
-    private readonly TableLayoutPanel _progressPanel = new();
-    private readonly DlpProgressBar _progressBar = new();
-    private readonly Label _progressValueLabel = new();
-    private readonly KryptonTextBox _urlBox = new();
-    private readonly KryptonTextBox _savePathBox = new();
-    private readonly KryptonButton _linkButton = new();
-    private readonly KryptonButton _previewButton = new();
-    private readonly KryptonCheckButton _videoButton = new();
-    private readonly KryptonCheckButton _audioButton = new();
-    private readonly KryptonComboBox _qualitySelect = new();
-    private readonly KryptonComboBox _formatSelect = new();
-    private readonly KryptonButton _browseButton = new();
-    private readonly KryptonButton _downloadButton = new();
-    private readonly KryptonButton _settingsButton = new();
-    private readonly KryptonButton _openFolderButton = new();
-    private readonly KryptonButton _updateButton = new();
-    private readonly KryptonButton _cancelButton = new();
-    private readonly KryptonButton _openLogButton = new();
-    private readonly KryptonToggleSwitch _embedSubsSwitch = new();
-    private readonly KryptonToggleSwitch _cookiesSwitch = new();
-    private readonly KryptonComboBox _browserSelect = new();
-    private readonly NotifyIcon _notifyIcon = new();
-    private readonly ContextMenuStrip _trayMenu = new();
-    private readonly ToolTip _toolTips = new();
-    private Label _detectedKindLabel = new();
-    private Label _detectedTitleLabel = new();
-    private Label _detectedDurationLabel = new();
+    private readonly WpfComboBox _browserSelect = new();
+    private readonly Forms.NotifyIcon _notifyIcon = new();
+    private readonly Forms.ContextMenuStrip _trayMenu = new();
+    private bool _isClosed;
 
+    public string VersionText => $"v{GetCurrentVersionText()}";
+
+    private WpfButton _updateButton => _settingsButton;
     private Process? _downloadProcess;
     private bool _isPreparingDownload;
     private bool _isUpdatingApp;
     private bool _isUpdatingYtDlp;
     private bool _isProbing;
     private bool _hasShownTrayNotice;
+    private int _progressValue;
 
     private enum StatusTone
     {
@@ -78,7 +72,7 @@ internal sealed partial class DownloadForm : Form
         public override string ToString() => Label;
     }
 
-    public DownloadForm(
+    public DownloadWindow(
         string url,
         string? audioUrl,
         string? fallbackUrl,
@@ -100,7 +94,10 @@ internal sealed partial class DownloadForm : Form
         _ytDlpPath = ToolResolver.ResolveToolPath("DLP_YTDLP_PATH", "yt-dlp.exe");
         _ffmpegPath = ToolResolver.ResolveToolPath("DLP_FFMPEG_PATH", "ffmpeg.exe");
 
-        BuildUi();
+        InitializeComponent();
+        DataContext = this;
+        ConfigureTrayIcon();
+        _videoButton.IsChecked = true;
         ConfigureBrowserSelect();
         PopulateQualityOptions([]);
         PopulateFormatOptions(DownloadKind.Video);
@@ -108,45 +105,44 @@ internal sealed partial class DownloadForm : Form
         SetInitialSourceState();
     }
 
-    protected override void OnFormClosing(FormClosingEventArgs e)
+    protected override void OnClosing(CancelEventArgs e)
     {
-        _browserSelect.DroppedDown = false;
+        _browserSelect.IsDropDownOpen = false;
         _notifyIcon.Visible = false;
         CancelDownload();
-        base.OnFormClosing(e);
+        base.OnClosing(e);
     }
 
-    protected override void OnFormClosed(FormClosedEventArgs e)
+    protected override void OnClosed(EventArgs e)
     {
+        _isClosed = true;
         _notifyIcon.Dispose();
         _trayMenu.Dispose();
-        _toolTips.Dispose();
-        base.OnFormClosed(e);
+        base.OnClosed(e);
     }
 
-    protected override void OnResize(EventArgs e)
+    protected override void OnStateChanged(EventArgs e)
     {
-        base.OnResize(e);
+        base.OnStateChanged(e);
 
-        if (WindowState == FormWindowState.Minimized)
+        if (WindowState == WindowState.Minimized)
         {
-            BeginInvoke(new Action(() => HideToTray(showNotice: true)));
+            Dispatcher.BeginInvoke(new Action(() => HideToTray(showNotice: true)));
         }
     }
 
-    protected override void OnShown(EventArgs e)
+    protected override void OnContentRendered(EventArgs e)
     {
-        base.OnShown(e);
+        base.OnContentRendered(e);
 
-        WindowState = FormWindowState.Normal;
+        WindowState = WindowState.Normal;
         ShowInTaskbar = true;
-        TopMost = true;
-        BringToFront();
+        Topmost = true;
         Activate();
 
-        BeginInvoke(new Action(async () =>
+        Dispatcher.BeginInvoke(new Action(async () =>
         {
-            TopMost = false;
+            Topmost = false;
 
             if (HasUsableSource())
             {
@@ -159,7 +155,6 @@ internal sealed partial class DownloadForm : Form
             }
         }));
     }
-
     private void SetInitialSourceState()
     {
         _urlBox.Text = _url;
@@ -171,7 +166,7 @@ internal sealed partial class DownloadForm : Form
 
         if (_ytDlpPath is null)
         {
-            _downloadButton.Enabled = false;
+            _downloadButton.IsEnabled = false;
             SetStatus("yt-dlp.exe was not found", 0);
             return;
         }
@@ -201,7 +196,7 @@ internal sealed partial class DownloadForm : Form
             return;
         }
 
-        DownloadKind kind = _audioButton.Checked ? DownloadKind.Audio : DownloadKind.Video;
+        DownloadKind kind = _audioButton.IsChecked == true ? DownloadKind.Audio : DownloadKind.Video;
         string downloadDirectory = ResolveSelectedDownloadDirectory();
         CryptAccessScope? folderAccess = null;
 
@@ -653,29 +648,29 @@ internal sealed partial class DownloadForm : Form
     private bool ConfirmBuiltInFallback(bool audioPair)
     {
         string mode = audioPair ? "captured video and audio links" : "the captured media link";
-        DialogResult result = MessageBox.Show(
+        MessageBoxResult result = MessageBox.Show(
             this,
             $"yt-dlp could not download this media.{Environment.NewLine}{Environment.NewLine}Try DLP direct download using {mode}?",
             "DLP direct download",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Question,
-            MessageBoxDefaultButton.Button1);
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.Yes);
 
-        return result == DialogResult.Yes;
+        return result == MessageBoxResult.Yes;
     }
 
     private bool ConfirmDuplicateDownload(string existingFilePath)
     {
         string fileName = Path.GetFileName(existingFilePath);
-        DialogResult result = MessageBox.Show(
+        MessageBoxResult result = MessageBox.Show(
             this,
             $"This video looks already downloaded.{Environment.NewLine}{Environment.NewLine}{fileName}{Environment.NewLine}{Environment.NewLine}Continue anyway?",
             "DLP",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Question,
-            MessageBoxDefaultButton.Button2);
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.No);
 
-        if (result == DialogResult.Yes)
+        if (result == MessageBoxResult.Yes)
         {
             Program.Log($"Duplicate title accepted by user '{_title}': {existingFilePath}");
             return true;
@@ -763,7 +758,7 @@ internal sealed partial class DownloadForm : Form
                 sourceUrl,
                 _referer,
                 _userAgent,
-                _cookiesSwitch.Checked ? CookieBrowserCatalog.Normalize(_browserSelect.SelectedItem?.ToString()) : null,
+                _cookiesSwitch.IsChecked == true ? CookieBrowserCatalog.Normalize(_browserSelect.SelectedItem?.ToString()) : null,
                 timeout.Token);
 
             _title = result.Title;
@@ -788,16 +783,15 @@ internal sealed partial class DownloadForm : Form
     private void SelectDownloadKind(DownloadKind kind)
     {
         bool video = kind == DownloadKind.Video;
-        _videoButton.Checked = video;
-        _audioButton.Checked = !video;
+        _videoButton.IsChecked = video;
+        _audioButton.IsChecked = !video;
         PopulateFormatOptions(kind);
-        _qualitySelect.Enabled = video && _downloadButton.Enabled;
+        _qualitySelect.IsEnabled = video && _downloadButton.IsEnabled;
         SetStatus(video ? "Video selected" : "Audio selected", 0);
     }
 
     private void PopulateQualityOptions(IReadOnlyList<int> heights)
     {
-        _qualitySelect.BeginUpdate();
         _qualitySelect.Items.Clear();
 
         if (heights.Count > 0)
@@ -812,13 +806,11 @@ internal sealed partial class DownloadForm : Form
 
         _qualitySelect.Items.Add(new QualityChoice("Best available", null));
         _qualitySelect.SelectedIndex = 0;
-        _qualitySelect.EndUpdate();
     }
 
     private void PopulateFormatOptions(DownloadKind kind)
     {
         string selected = GetSelectedFormat();
-        _formatSelect.BeginUpdate();
         _formatSelect.Items.Clear();
 
         string[] formats = kind == DownloadKind.Video
@@ -832,7 +824,6 @@ internal sealed partial class DownloadForm : Form
 
         int selectedIndex = Array.FindIndex(formats, format => string.Equals(format, selected, StringComparison.OrdinalIgnoreCase));
         _formatSelect.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
-        _formatSelect.EndUpdate();
     }
 
     private int? GetSelectedQualityHeight()
@@ -842,7 +833,7 @@ internal sealed partial class DownloadForm : Form
 
     private string GetSelectedFormat()
     {
-        return _formatSelect.SelectedItem?.ToString() ?? (_audioButton.Checked ? "MP3" : "MP4");
+        return _formatSelect.SelectedItem?.ToString() ?? (_audioButton.IsChecked == true ? "MP3" : "MP4");
     }
 
     private void SetDetectedMetadata(string mediaType, string? title, TimeSpan? duration)
@@ -866,9 +857,9 @@ internal sealed partial class DownloadForm : Form
 
     private void SetBusyState(DownloadKind kind)
     {
-        _downloadButton.Enabled = false;
-        _updateButton.Enabled = false;
-        _settingsButton.Enabled = false;
+        _downloadButton.IsEnabled = false;
+        _updateButton.IsEnabled = false;
+        _settingsButton.IsEnabled = false;
         SetOptionControlsEnabled(false);
         UpdateProgress(0);
         SetStatus(kind == DownloadKind.Video ? "Downloading video" : "Downloading audio", 0);
@@ -877,9 +868,9 @@ internal sealed partial class DownloadForm : Form
     private void SetPreparingDownloadState()
     {
         _isPreparingDownload = true;
-        _downloadButton.Enabled = false;
-        _updateButton.Enabled = false;
-        _settingsButton.Enabled = false;
+        _downloadButton.IsEnabled = false;
+        _updateButton.IsEnabled = false;
+        _settingsButton.IsEnabled = false;
         SetOptionControlsEnabled(false);
         UpdateProgress(0);
         SetStatus("Preparing download", 0);
@@ -895,13 +886,13 @@ internal sealed partial class DownloadForm : Form
         bool hasSource = HasUsableSource();
         bool canRunYtDlp = _ytDlpPath is not null && canRunAppTools && hasSource;
 
-        _downloadButton.Enabled = canRunYtDlp;
-        _previewButton.Enabled = canRunAppTools && hasSource;
-        _updateButton.Enabled = canRunAppTools;
-        _settingsButton.Enabled = canRunAppTools;
+        _downloadButton.IsEnabled = canRunYtDlp;
+        _previewButton.IsEnabled = canRunAppTools && hasSource;
+        _updateButton.IsEnabled = canRunAppTools;
+        _settingsButton.IsEnabled = canRunAppTools;
         SetOptionControlsEnabled(canRunAppTools);
-        _downloadButton.Enabled = canRunYtDlp;
-        UpdateStatusActions(ResolveStatusTone(_statusLabel.Text, _progressBar.Value));
+        _downloadButton.IsEnabled = canRunYtDlp;
+        UpdateStatusActions(ResolveStatusTone(_statusLabel.Text, _progressValue));
     }
 
     private async Task UpdateAllAsync()
@@ -913,7 +904,7 @@ internal sealed partial class DownloadForm : Form
 
         await UpdateAppAsync();
 
-        if (!IsDisposed && !_isUpdatingApp)
+        if (!_isClosed && !_isUpdatingApp)
         {
             await UpdateYtDlpAsync();
         }
@@ -928,9 +919,9 @@ internal sealed partial class DownloadForm : Form
 
         bool installerStarted = false;
         _isUpdatingApp = true;
-        _downloadButton.Enabled = false;
-        _updateButton.Enabled = false;
-        _settingsButton.Enabled = false;
+        _downloadButton.IsEnabled = false;
+        _updateButton.IsEnabled = false;
+        _settingsButton.IsEnabled = false;
         SetOptionControlsEnabled(false);
         UpdateProgress(0);
         SetStatus("Checking app update", 0);
@@ -965,7 +956,7 @@ internal sealed partial class DownloadForm : Form
             AppUpdater.StartInstaller(installerPath);
             installerStarted = true;
 
-            BeginInvoke(new Action(Application.Exit));
+            _ = Dispatcher.BeginInvoke(new Action(() => System.Windows.Application.Current?.Shutdown()));
         }
         catch (Exception ex)
         {
@@ -990,9 +981,9 @@ internal sealed partial class DownloadForm : Form
         }
 
         _isUpdatingYtDlp = true;
-        _downloadButton.Enabled = false;
-        _updateButton.Enabled = false;
-        _settingsButton.Enabled = false;
+        _downloadButton.IsEnabled = false;
+        _updateButton.IsEnabled = false;
+        _settingsButton.IsEnabled = false;
         SetOptionControlsEnabled(false);
         SetStatus("Updating yt-dlp", 0);
 
@@ -1057,7 +1048,7 @@ internal sealed partial class DownloadForm : Form
 
     private void SetStatus(string text, int progress)
     {
-        if (IsDisposed)
+        if (_isClosed)
         {
             return;
         }
@@ -1070,9 +1061,9 @@ internal sealed partial class DownloadForm : Form
             UpdateProgress(progress);
         }
 
-        if (InvokeRequired)
+        if (!Dispatcher.CheckAccess())
         {
-            BeginInvoke(Apply);
+            Dispatcher.BeginInvoke((Action)Apply);
             return;
         }
 
@@ -1081,33 +1072,41 @@ internal sealed partial class DownloadForm : Form
 
     private void ApplyStatusTone(StatusTone tone)
     {
-        Color color = tone switch
+        WpfBrush color = tone switch
         {
-            StatusTone.Busy => DlpTheme.AccentInteractive,
-            StatusTone.Success => DlpTheme.Success,
-            StatusTone.Warning => DlpTheme.Warning,
-            StatusTone.Error => DlpTheme.Destructive,
-            _ => DlpTheme.TextSecondary
+            StatusTone.Busy => ResourceBrush("FocusBrush"),
+            StatusTone.Success => ResourceBrush("SuccessBrush"),
+            StatusTone.Warning => ResourceBrush("WarningBrush"),
+            StatusTone.Error => ResourceBrush("ErrorBrush"),
+            _ => ResourceBrush("TextSecondaryBrush")
         };
 
-        _statusLabel.ForeColor = color;
+        _statusLabel.Foreground = color;
+        _progressBar.Foreground = tone == StatusTone.Error
+            ? ResourceBrush("ErrorBrush")
+            : ResourceBrush("AccentBrush");
         UpdateStatusActions(tone);
+    }
+
+    private WpfBrush ResourceBrush(string key)
+    {
+        return TryFindResource(key) as WpfBrush ?? WpfBrushes.White;
     }
 
     private void SetDownloadProcess(Process? process)
     {
         _downloadProcess = process;
 
-        if (IsDisposed)
+        if (_isClosed)
         {
             return;
         }
 
-        void Apply() => UpdateStatusActions(ResolveStatusTone(_statusLabel.Text, _progressBar.Value));
+        void Apply() => UpdateStatusActions(ResolveStatusTone(_statusLabel.Text, _progressValue));
 
-        if (InvokeRequired)
+        if (!Dispatcher.CheckAccess())
         {
-            BeginInvoke(Apply);
+            Dispatcher.BeginInvoke((Action)Apply);
             return;
         }
 
@@ -1118,17 +1117,18 @@ internal sealed partial class DownloadForm : Form
     {
         bool canCancelDownload = tone == StatusTone.Busy && _downloadProcess is not null;
 
-        _cancelButton.Visible = canCancelDownload;
-        _cancelButton.Enabled = canCancelDownload;
-        _openLogButton.Visible = tone == StatusTone.Error;
+        _cancelButton.Visibility = canCancelDownload ? Visibility.Visible : Visibility.Collapsed;
+        _cancelButton.IsEnabled = canCancelDownload;
+        _openLogButton.Visibility = tone == StatusTone.Error ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void UpdateProgress(int progress)
     {
         int value = Math.Clamp(progress, 0, 100);
 
-        _progressBar.Value = value;
+        _progressValue = value;
         _progressValueLabel.Text = $"{value}%";
+        _progressBar.Value = value;
     }
 
     private static StatusTone ResolveStatusTone(string text, int progress)
@@ -1234,7 +1234,7 @@ internal sealed partial class DownloadForm : Form
 
     private void BrowseSaveDirectory()
     {
-        using FolderBrowserDialog dialog = new()
+        using Forms.FolderBrowserDialog dialog = new()
         {
             Description = "Choose where DLP saves downloads",
             SelectedPath = Directory.Exists(_downloadDirectory)
@@ -1243,7 +1243,7 @@ internal sealed partial class DownloadForm : Form
             UseDescriptionForTitle = true
         };
 
-        if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath))
+        if (dialog.ShowDialog() != Forms.DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath))
         {
             return;
         }
@@ -1300,31 +1300,31 @@ internal sealed partial class DownloadForm : Form
         }
     }
 
-    private void OnSourceKeyDown(object? sender, KeyEventArgs e)
+    private void OnSourceKeyDown(object? sender, WpfKeyEventArgs e)
     {
-        if (e.KeyCode != Keys.Enter)
+        if (e.Key != WpfKey.Enter)
         {
             return;
         }
 
-        e.SuppressKeyPress = true;
+        e.Handled = true;
         _ = ProbeSourceAsync();
     }
 
-    private void OnSourceDragEnter(object? sender, DragEventArgs e)
+    private void OnSourceDragEnter(object? sender, WpfDragEventArgs e)
     {
-        if (e.Data?.GetDataPresent(DataFormats.Text) == true)
+        if (e.Data?.GetDataPresent(System.Windows.DataFormats.Text) == true)
         {
-            e.Effect = DragDropEffects.Copy;
+            e.Effects = System.Windows.DragDropEffects.Copy;
             return;
         }
 
-        e.Effect = DragDropEffects.None;
+        e.Effects = System.Windows.DragDropEffects.None;
     }
 
-    private void OnSourceDragDrop(object? sender, DragEventArgs e)
+    private void OnSourceDragDrop(object? sender, WpfDragEventArgs e)
     {
-        string? text = e.Data?.GetData(DataFormats.Text) as string;
+        string? text = e.Data?.GetData(System.Windows.DataFormats.Text) as string;
 
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -1427,3 +1427,5 @@ internal sealed partial class DownloadForm : Form
         return string.Concat(value.AsSpan(0, maxLength - 1), "...");
     }
 }
+
+

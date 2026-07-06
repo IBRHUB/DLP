@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Forms = System.Windows.Forms;
 
 internal static class Program
 {
@@ -244,12 +245,13 @@ internal static class Program
 
     public static void ShowReadyMessage()
     {
-        ApplicationConfiguration.Initialize();
-        MessageBox.Show(
+        Forms.Application.EnableVisualStyles();
+        Forms.Application.SetCompatibleTextRenderingDefault(false);
+        Forms.MessageBox.Show(
             "DLP is ready. Use Download with DLP from a supported browser page.",
             "DLP",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Information);
+            Forms.MessageBoxButtons.OK,
+            Forms.MessageBoxIcon.Information);
     }
 
     private static void ShowDownloadWindow(
@@ -262,8 +264,14 @@ internal static class Program
         string? userAgent,
         string? cookieBrowser)
     {
-        ApplicationConfiguration.Initialize();
-        Application.Run(new DownloadForm(
+        Forms.Application.EnableVisualStyles();
+        Forms.Application.SetCompatibleTextRenderingDefault(false);
+
+        bool ownsApplication = System.Windows.Application.Current is null;
+        System.Windows.Application application = System.Windows.Application.Current ?? new System.Windows.Application();
+        application.ShutdownMode = System.Windows.ShutdownMode.OnMainWindowClose;
+
+        DownloadWindow window = new(
             url,
             audioUrl,
             fallbackUrl,
@@ -271,7 +279,15 @@ internal static class Program
             title,
             referer,
             userAgent,
-            cookieBrowser));
+            cookieBrowser);
+
+        if (ownsApplication)
+        {
+            application.Run(window);
+            return;
+        }
+
+        window.ShowDialog();
     }
 
     public static void Log(string message)
