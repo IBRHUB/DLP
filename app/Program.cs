@@ -2024,7 +2024,7 @@ internal sealed record AppUpdateInfo(
 internal static class AppUpdater
 {
     private const string LatestReleaseApiUrl = "https://api.github.com/repos/IBRHUB/DLP/releases/latest";
-    private const string FallbackReleaseApiUrl = "https://api.github.com/repos/IBRHUB/DLP/releases/tags/1.0.0";
+    private const string FallbackReleaseApiUrl = "https://api.github.com/repos/IBRHUB/DLP/releases/tags/1.0.1";
     private const string PreferredInstallerName = "DLP_Setup.exe";
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -2220,7 +2220,7 @@ internal static class AppUpdater
             Timeout = TimeSpan.FromMinutes(10)
         };
 
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("DLP/1.0.0 (+https://github.com/IBRHUB/DLP)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("DLP/1.0.1 (+https://github.com/IBRHUB/DLP)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
 

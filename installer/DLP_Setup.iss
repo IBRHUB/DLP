@@ -1,5 +1,5 @@
 #define AppName "DLP"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #define AppPublisher "IBRHUB"
 #define AppExeName "DLP.exe"
 #define NativeHostName "com.ibrhub.dlp"
