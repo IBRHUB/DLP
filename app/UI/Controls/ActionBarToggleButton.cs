@@ -1,21 +1,21 @@
 using System.Windows;
 using System.Windows.Media;
 using WpfBrush = System.Windows.Media.Brush;
-using WpfButton = System.Windows.Controls.Button;
+using WpfToggleButton = System.Windows.Controls.Primitives.ToggleButton;
 
-namespace DLP.UI.DlpStyle.Controls;
+namespace DLP.UI.Controls;
 
-public class ActionBarButton : WpfButton
+public class ActionBarToggleButton : WpfToggleButton
 {
-    static ActionBarButton()
+    static ActionBarToggleButton()
     {
-        DefaultStyleKeyProperty.OverrideMetadata(typeof(ActionBarButton), new FrameworkPropertyMetadata(typeof(ActionBarButton)));
+        DefaultStyleKeyProperty.OverrideMetadata(typeof(ActionBarToggleButton), new FrameworkPropertyMetadata(typeof(ActionBarToggleButton)));
     }
 
     public static readonly DependencyProperty IconPathProperty = DependencyProperty.Register(
         nameof(IconPath),
         typeof(Geometry),
-        typeof(ActionBarButton),
+        typeof(ActionBarToggleButton),
         new PropertyMetadata(null));
 
     public Geometry? IconPath
@@ -27,7 +27,7 @@ public class ActionBarButton : WpfButton
     public static readonly DependencyProperty IconWidthProperty = DependencyProperty.Register(
         nameof(IconWidth),
         typeof(double),
-        typeof(ActionBarButton),
+        typeof(ActionBarToggleButton),
         new PropertyMetadata(14d));
 
     public double IconWidth
@@ -39,7 +39,7 @@ public class ActionBarButton : WpfButton
     public static readonly DependencyProperty IconHeightProperty = DependencyProperty.Register(
         nameof(IconHeight),
         typeof(double),
-        typeof(ActionBarButton),
+        typeof(ActionBarToggleButton),
         new PropertyMetadata(14d));
 
     public double IconHeight
@@ -51,7 +51,7 @@ public class ActionBarButton : WpfButton
     public static readonly DependencyProperty IconMarginProperty = DependencyProperty.Register(
         nameof(IconMargin),
         typeof(Thickness),
-        typeof(ActionBarButton),
+        typeof(ActionBarToggleButton),
         new PropertyMetadata(new Thickness(0, 0, 8, 0)));
 
     public Thickness IconMargin
@@ -60,22 +60,10 @@ public class ActionBarButton : WpfButton
         set => SetValue(IconMarginProperty, value);
     }
 
-    public static readonly DependencyProperty IconFillProperty = DependencyProperty.Register(
-        nameof(IconFill),
-        typeof(WpfBrush),
-        typeof(ActionBarButton),
-        new PropertyMetadata(null));
-
-    public WpfBrush? IconFill
-    {
-        get => (WpfBrush?)GetValue(IconFillProperty);
-        set => SetValue(IconFillProperty, value);
-    }
-
     public static readonly DependencyProperty TextProperty = DependencyProperty.Register(
         nameof(Text),
         typeof(string),
-        typeof(ActionBarButton),
+        typeof(ActionBarToggleButton),
         new PropertyMetadata(string.Empty));
 
     public string Text
@@ -87,7 +75,7 @@ public class ActionBarButton : WpfButton
     public static readonly DependencyProperty TextFontSizeProperty = DependencyProperty.Register(
         nameof(TextFontSize),
         typeof(double),
-        typeof(ActionBarButton),
+        typeof(ActionBarToggleButton),
         new PropertyMetadata(12d));
 
     public double TextFontSize
@@ -99,12 +87,24 @@ public class ActionBarButton : WpfButton
     public static readonly DependencyProperty ShowIconProperty = DependencyProperty.Register(
         nameof(ShowIcon),
         typeof(bool),
-        typeof(ActionBarButton),
+        typeof(ActionBarToggleButton),
         new PropertyMetadata(true));
 
     public bool ShowIcon
     {
         get => (bool)GetValue(ShowIconProperty);
         set => SetValue(ShowIconProperty, value);
+    }
+
+    public static readonly DependencyProperty ToggledBrushProperty = DependencyProperty.Register(
+        nameof(ToggledBrush),
+        typeof(WpfBrush),
+        typeof(ActionBarToggleButton),
+        new PropertyMetadata(null));
+
+    public WpfBrush? ToggledBrush
+    {
+        get => (WpfBrush?)GetValue(ToggledBrushProperty);
+        set => SetValue(ToggledBrushProperty, value);
     }
 }

@@ -1,10 +1,6 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-                    xmlns:controls="clr-namespace:DLP.UI.DlpStyle.Controls">
-    <ResourceDictionary.MergedDictionaries>
-        <ResourceDictionary Source="/UI/DlpStyle/Styles/Icons.xaml" />
-        <ResourceDictionary Source="/UI/DlpStyle/Styles/Converters.xaml" />
-    </ResourceDictionary.MergedDictionaries>
+                    xmlns:controls="clr-namespace:DLP.UI.Controls">
 
     <Style x:Key="TitleBarButtonStyle" TargetType="Button">
         <Setter Property="Width" Value="46" />
@@ -83,54 +79,6 @@
                             </Grid>
                         </Grid>
                     </Border>
-                </ControlTemplate>
-            </Setter.Value>
-        </Setter>
-    </Style>
-
-    <Style TargetType="controls:ActionBarButton">
-        <Setter Property="Height" Value="36" />
-        <Setter Property="Padding" Value="12,0" />
-        <Setter Property="Background" Value="{DynamicResource Layer2BackgroundBrush}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
-        <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="FontWeight" Value="SemiBold" />
-        <Setter Property="Cursor" Value="Hand" />
-        <Setter Property="Template">
-            <Setter.Value>
-                <ControlTemplate TargetType="controls:ActionBarButton">
-                    <Border x:Name="Border"
-                            Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
-                            BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="4">
-                        <StackPanel Margin="{TemplateBinding Padding}"
-                                    HorizontalAlignment="Center"
-                                    VerticalAlignment="Center"
-                                    Orientation="Horizontal">
-                            <Path Width="{TemplateBinding IconWidth}"
-                                  Height="{TemplateBinding IconHeight}"
-                                  Margin="{TemplateBinding IconMargin}"
-                                  Data="{TemplateBinding IconPath}"
-                                  Fill="{TemplateBinding Foreground}"
-                                  Stretch="Uniform"
-                                  Visibility="{TemplateBinding ShowIcon, Converter={StaticResource BoolToVisibilityConverter}}" />
-                            <TextBlock VerticalAlignment="Center"
-                                       FontSize="{TemplateBinding TextFontSize}"
-                                       Foreground="{TemplateBinding Foreground}"
-                                       Text="{TemplateBinding Text}" />
-                        </StackPanel>
-                    </Border>
-                    <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Border" Property="Background" Value="{DynamicResource Layer3BackgroundBrush}" />
-                            <Setter TargetName="Border" Property="BorderBrush" Value="{DynamicResource ControlBorderHoverBrush}" />
-                        </Trigger>
-                        <Trigger Property="IsEnabled" Value="False">
-                            <Setter Property="Opacity" Value="0.45" />
-                        </Trigger>
-                    </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>

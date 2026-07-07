@@ -4,7 +4,7 @@ using System.Windows.Input;
 using WpfButton = System.Windows.Controls.Button;
 using WpfControl = System.Windows.Controls.Control;
 
-namespace DLP.UI.DlpStyle.Controls;
+namespace DLP.UI.Controls;
 
 public class TitleBar : WpfControl
 {
