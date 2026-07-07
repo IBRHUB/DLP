@@ -63,7 +63,7 @@
                                         Style="{StaticResource TitleBarButtonStyle}">
                                     <Path Width="10"
                                           Height="10"
-                                          Data="{StaticResource IconMinimize}"
+                                          Data="{DynamicResource IconMinimize}"
                                           Fill="{DynamicResource TextPrimaryBrush}"
                                           Stretch="Uniform" />
                                 </Button>
@@ -72,7 +72,7 @@
                                         Style="{StaticResource TitleBarButtonStyle}">
                                     <Path Width="10"
                                           Height="10"
-                                          Data="{StaticResource IconClose}"
+                                          Data="{DynamicResource IconClose}"
                                           Fill="{DynamicResource TextPrimaryBrush}"
                                           Stretch="Uniform" />
                                 </Button>
@@ -103,14 +103,14 @@
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="4">
                         <Grid Margin="{TemplateBinding Padding}">
-                            <Path Width="{TemplateBinding IconWidth}"
+                            <Path x:Name="Icon"
+                                  Width="{TemplateBinding IconWidth}"
                                   Height="{TemplateBinding IconHeight}"
                                   HorizontalAlignment="Left"
                                   VerticalAlignment="Center"
                                   Data="{TemplateBinding IconPath}"
                                   Fill="{TemplateBinding Foreground}"
-                                  Stretch="Uniform"
-                                  Visibility="{TemplateBinding ShowIcon, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                  Stretch="Uniform" />
                             <TextBlock HorizontalAlignment="Center"
                                        VerticalAlignment="Center"
                                        FontSize="{TemplateBinding TextFontSize}"
@@ -125,6 +125,9 @@
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Border" Property="BorderBrush" Value="{Binding ToggledBrush, RelativeSource={RelativeSource TemplatedParent}}" />
+                        </Trigger>
+                        <Trigger Property="ShowIcon" Value="False">
+                            <Setter TargetName="Icon" Property="Visibility" Value="Collapsed" />
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.45" />

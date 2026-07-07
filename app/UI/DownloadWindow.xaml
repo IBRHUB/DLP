@@ -2,7 +2,7 @@
         x:ClassModifier="internal"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:ui="clr-namespace:DLP.UI.DlpStyle.Controls"
+        xmlns:ui="clr-namespace:DLP.UI.Controls"
         Title="DLP"
         Width="760"
         Height="736"
@@ -23,10 +23,7 @@
     <Window.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="/UI/DlpStyle/Themes/DarkTheme.xaml" />
-                <ResourceDictionary Source="/UI/DlpStyle/Styles/Theme.xaml" />
-                <ResourceDictionary Source="/UI/DlpStyle/Styles/Icons.xaml" />
-                <ResourceDictionary Source="/UI/DlpStyle/Themes/Generic.xaml" />
+                <ResourceDictionary Source="/UI/Styles/Theme.xaml" />
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Window.Resources>
