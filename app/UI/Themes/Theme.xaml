@@ -2,8 +2,8 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <ResourceDictionary.MergedDictionaries>
         <ResourceDictionary Source="/UI/Themes/DarkTheme.xaml" />
-        <ResourceDictionary Source="/UI/Styles/Converters.xaml" />
-        <ResourceDictionary Source="/UI/Styles/Icons.xaml" />
+        <ResourceDictionary Source="/UI/Converters/Converters.xaml" />
+        <ResourceDictionary Source="/UI/Resources/Icons.xaml" />
         <ResourceDictionary Source="/UI/Styles/Buttons.xaml" />
         <ResourceDictionary Source="/UI/Styles/TextBoxes.xaml" />
         <ResourceDictionary Source="/UI/Styles/ComboBoxes.xaml" />
