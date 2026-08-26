@@ -5,11 +5,11 @@
         xmlns:ui="clr-namespace:DLP.UI.Controls"
         Title="DLP"
         Width="760"
-        Height="736"
+        Height="780"
         MinWidth="760"
-        MinHeight="736"
+        MinHeight="780"
         MaxWidth="760"
-        MaxHeight="736"
+        MaxHeight="780"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
@@ -160,7 +160,7 @@
                     <Path Width="14" Height="14" VerticalAlignment="Center" Data="{DynamicResource IconSettings}" Fill="{DynamicResource TextSecondaryBrush}" Stretch="Uniform" />
                     <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold" Text="Options" />
                 </StackPanel>
-                <Border Height="90" Margin="0,6,0,0" Background="Transparent">
+                <Border Height="133" Margin="0,6,0,0" Background="Transparent">
                     <Grid Margin="0,8,0,8">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="28" />
@@ -168,16 +168,20 @@
                             <RowDefinition Height="1" />
                             <RowDefinition Height="8" />
                             <RowDefinition Height="28" />
+                            <RowDefinition Height="8" />
+                            <RowDefinition Height="36" />
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="54" />
+                            <ColumnDefinition Width="132" />
                         </Grid.ColumnDefinitions>
                         <TextBlock VerticalAlignment="Center" Text="Embed subtitles (if available)" />
                         <ToggleButton x:Name="_embedSubsSwitch" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource DlpSwitchStyle}" />
                         <Border Grid.Row="2" Grid.ColumnSpan="2" Background="{DynamicResource ControlBorderBrush}" Opacity="0.55" />
                         <TextBlock Grid.Row="4" VerticalAlignment="Center" Text="Include browser cookies" />
                         <ToggleButton x:Name="_cookiesSwitch" Grid.Row="4" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource DlpSwitchStyle}" Checked="CookiesSwitch_Changed" Unchecked="CookiesSwitch_Changed" />
+                        <TextBlock Grid.Row="6" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondaryBrush}" Text="Browser" />
+                        <ComboBox x:Name="_browserSelect" Grid.Row="6" Grid.Column="1" Style="{StaticResource DlpComboBoxStyle}" />
                     </Grid>
                 </Border>
             </StackPanel>
@@ -225,21 +229,19 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="36" />
                     <ColumnDefinition Width="8" />
-                    <ColumnDefinition Width="26" />
                     <ColumnDefinition Width="84" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="72" />
                     <ColumnDefinition Width="12" />
                     <ColumnDefinition Width="212" />
                 </Grid.ColumnDefinitions>
-                <Button x:Name="_settingsButton" Style="{StaticResource DlpIconButtonStyle}" ToolTip="Check DLP and yt-dlp updates" Click="Settings_Click">
+                <Button x:Name="_settingsButton" Style="{StaticResource DlpIconButtonStyle}" ToolTip="Check for DLP and yt-dlp updates" Click="Settings_Click">
                     <Path Width="15" Height="15" Data="{DynamicResource IconSettings}" Fill="{DynamicResource TextPrimaryBrush}" Stretch="Uniform" />
                 </Button>
-                <Path Grid.Column="2" Width="15" Height="15" VerticalAlignment="Center" Data="{DynamicResource IconTheme}" Fill="{DynamicResource TextSecondaryBrush}" Stretch="Uniform" ToolTip="Dark mode is enabled" />
-                <TextBlock Grid.Column="3" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12" Text="{Binding VersionText, RelativeSource={RelativeSource AncestorType=Window}}" />
-                <Button x:Name="_cancelButton" Grid.Column="5" Visibility="Collapsed" Style="{StaticResource DlpButtonStyle}" Click="Cancel_Click" Content="Cancel" />
-                <Button x:Name="_openLogButton" Grid.Column="5" Visibility="Collapsed" Style="{StaticResource DlpButtonStyle}" Click="OpenLog_Click" Content="Log" />
-                <Button x:Name="_openFolderButton" Grid.Column="7" Style="{StaticResource DlpButtonStyle}" Click="OpenFolder_Click">
+                <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12" Text="{Binding VersionText, RelativeSource={RelativeSource AncestorType=Window}}" />
+                <Button x:Name="_cancelButton" Grid.Column="4" Visibility="Collapsed" Style="{StaticResource DlpButtonStyle}" Click="Cancel_Click" Content="Cancel" />
+                <Button x:Name="_openLogButton" Grid.Column="4" Visibility="Collapsed" Style="{StaticResource DlpButtonStyle}" Click="OpenLog_Click" Content="Log" />
+                <Button x:Name="_openFolderButton" Grid.Column="6" Style="{StaticResource DlpButtonStyle}" Click="OpenFolder_Click">
                     <StackPanel HorizontalAlignment="Center" Orientation="Horizontal">
                         <Path Width="14" Height="14" Margin="0,0,10,0" Data="{DynamicResource IconFolder}" Fill="{DynamicResource TextPrimaryBrush}" Stretch="Uniform" />
                         <TextBlock VerticalAlignment="Center" Text="Open downloads folder" />

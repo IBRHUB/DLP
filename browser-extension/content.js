@@ -27,6 +27,15 @@
     browserCookies: false,
     cookieBrowser: "brave"
   };
+  const OVERLAY_POSITIONS = new Set([
+    "auto",
+    "top-right",
+    "top-center",
+    "top-left",
+    "bottom-right",
+    "bottom-center",
+    "bottom-left"
+  ]);
 
   let lastUrl = location.href;
   let refreshTimer = null;
@@ -42,6 +51,28 @@
   let tikTokScriptUrlCacheAt = 0;
   let tikTokItemsCache = null;
   let tikTokItemsCacheAt = 0;
+  let lastInstagramMediaContext = "";
+  let instagramCandidatesStartedAt = Date.now();
+
+  function normalizeSettings(storedSettings) {
+    const values = {
+      ...DEFAULT_SETTINGS,
+      ...(storedSettings && typeof storedSettings === "object" ? storedSettings : {})
+    };
+
+    return {
+      silentDownload: Boolean(values.silentDownload),
+      autoHideOverlay: Boolean(values.autoHideOverlay),
+      overlayPosition: OVERLAY_POSITIONS.has(values.overlayPosition)
+        ? values.overlayPosition
+        : DEFAULT_SETTINGS.overlayPosition,
+      experimentalAllSites: Boolean(values.experimentalAllSites),
+      deepScanner: Boolean(values.deepScanner),
+      streamOverlay: Boolean(values.streamOverlay),
+      browserCookies: Boolean(values.browserCookies),
+      cookieBrowser: String(values.cookieBrowser || DEFAULT_SETTINGS.cookieBrowser).toLowerCase()
+    };
+  }
 
   function hasRuntime() {
     try {
@@ -304,7 +335,7 @@
       if (chrome.runtime.lastError) {
         console.log("DLP settings error:", chrome.runtime.lastError.message);
       } else {
-        settings = { ...DEFAULT_SETTINGS, ...storedSettings };
+        settings = normalizeSettings(storedSettings);
       }
 
       if (callback) {
@@ -323,17 +354,21 @@
         return;
       }
 
+      const updatedSettings = { ...settings };
       let changed = false;
 
       for (const key of Object.keys(DEFAULT_SETTINGS)) {
         if (Object.prototype.hasOwnProperty.call(changes, key)) {
-          settings[key] = changes[key].newValue ?? DEFAULT_SETTINGS[key];
+          updatedSettings[key] = changes[key].newValue ?? DEFAULT_SETTINGS[key];
           changed = true;
         }
       }
 
       if (changed) {
-        if (Object.prototype.hasOwnProperty.call(changes, "streamOverlay") && !settings.streamOverlay) {
+        const previousStreamOverlay = settings.streamOverlay;
+        settings = normalizeSettings(updatedSettings);
+
+        if (previousStreamOverlay && !settings.streamOverlay) {
           removeStreamPanel();
         }
 
@@ -667,7 +702,10 @@
   function isInstagramCdnHost(host) {
     return host === "cdninstagram.com"
       || host.endsWith(".cdninstagram.com")
-      || (host.includes("instagram") && host.endsWith(".fbcdn.net"));
+      || (host.endsWith(".fbcdn.net")
+        && (host.startsWith("video.")
+          || host.startsWith("scontent.")
+          || host.includes("instagram")));
   }
 
   function normalizeInstagramMediaUrl(url) {
@@ -711,6 +749,16 @@
 
   function isInstagramMediaUrl(url) {
     return Boolean(normalizeInstagramMediaUrl(url));
+  }
+
+  function isInstagramVideoPageUrl(url) {
+    try {
+      const parsed = new URL(url, location.origin);
+      return isInstagramMediaUrl(url)
+        && !/^\/reels\/audio(?:\/|$)/i.test(parsed.pathname);
+    } catch {
+      return false;
+    }
   }
 
   function decodeEscapedMediaText(text) {
@@ -760,7 +808,7 @@
     return urls;
   }
 
-  function getInstagramScriptMediaCandidates() {
+  function getInstagramScriptMediaCandidates(context) {
     const candidates = [];
     const seen = new Set();
     let remainingBudget = MAX_INSTAGRAM_SCRIPT_SCAN_CHARS;
@@ -787,7 +835,7 @@
         }
 
         seen.add(url);
-        candidates.push(createExperimentalCandidate(url, "instagram.script"));
+        candidates.push(createExperimentalCandidate(url, "instagram.script", undefined, context));
       }
     }
 
@@ -952,7 +1000,7 @@
     );
   }
 
-  function getDownloadUrl() {
+  function getDownloadUrl(preferredVideo = null) {
     const platform = getPlatform();
 
     if (platform === "tiktok") {
@@ -964,7 +1012,7 @@
     }
 
     if (platform === "instagram") {
-      return getInstagramMediaUrl() || location.href;
+      return getInstagramMediaUrl(preferredVideo) || location.href;
     }
 
     if (!platform && settings.experimentalAllSites) {
@@ -1011,50 +1059,81 @@
     return getExperimentalCandidates(settings.deepScanner)[0]?.url || null;
   }
 
-  function getExperimentalCandidates(deepScan) {
+  function getExperimentalCandidates(deepScan, preferredVideo = null) {
     const candidates = [];
     const platform = getPlatform();
     const isInstagramPage = platform === "instagram";
-    const visibleVideo = getVisibleVideo();
-    const videos = isInstagramPage
-      ? Array.from(document.querySelectorAll("video"))
-      : [visibleVideo].filter(Boolean);
+    const visibleVideo = isInstagramPage
+      ? preferredVideo || getInstagramActiveVideo()
+      : getVisibleVideo();
+    const instagramMediaUrl = isInstagramPage ? getInstagramMediaUrl(visibleVideo) : null;
+    const candidateContext = isInstagramPage
+      ? { mediaPageUrl: instagramMediaUrl, video: visibleVideo }
+      : undefined;
+
+    if (isInstagramPage) {
+      syncInstagramMediaContext(visibleVideo, instagramMediaUrl);
+    }
+
+    const videos = [visibleVideo].filter(Boolean);
 
     for (const video of videos) {
-      const sourcePrefix = isInstagramPage && video !== visibleVideo ? "instagram.video" : "video";
+      const sourcePrefix = isInstagramPage ? "instagram.video.visible" : "video";
       candidates.push(
-        createExperimentalCandidate(video.currentSrc, `${sourcePrefix}.currentSrc`),
-        createExperimentalCandidate(video.src, `${sourcePrefix}.src`),
+        createExperimentalCandidate(video.currentSrc, `${sourcePrefix}.currentSrc`, undefined, candidateContext),
+        createExperimentalCandidate(video.src, `${sourcePrefix}.src`, undefined, candidateContext),
         ...Array.from(video.querySelectorAll("source[src]"), (source) =>
-          createExperimentalCandidate(source.src, `${sourcePrefix}.source`))
+          createExperimentalCandidate(source.src, `${sourcePrefix}.source`, undefined, candidateContext))
       );
     }
 
     candidates.push(
-      createExperimentalCandidate(getMetaContent('meta[property="og:video:secure_url"]'), "meta.og:video:secure_url"),
-      createExperimentalCandidate(getMetaContent('meta[property="og:video:url"]'), "meta.og:video:url"),
-      createExperimentalCandidate(getMetaContent('meta[property="og:video"]'), "meta.og:video"),
-      createExperimentalCandidate(getMetaContent('meta[name="twitter:player:stream"]'), "meta.twitter:player:stream")
+      createExperimentalCandidate(getMetaContent('meta[property="og:video:secure_url"]'), "meta.og:video:secure_url", undefined, candidateContext),
+      createExperimentalCandidate(getMetaContent('meta[property="og:video:url"]'), "meta.og:video:url", undefined, candidateContext),
+      createExperimentalCandidate(getMetaContent('meta[property="og:video"]'), "meta.og:video", undefined, candidateContext),
+      createExperimentalCandidate(getMetaContent('meta[name="twitter:player:stream"]'), "meta.twitter:player:stream", undefined, candidateContext)
     );
-
-    if (isInstagramPage) {
-      candidates.push(...getInstagramScriptMediaCandidates());
-    }
 
     if (deepScan || isInstagramPage) {
       for (const entry of performance.getEntriesByType("resource")) {
-        if (isLikelyMediaUrl(entry.name)) {
+        const entryTime = performance.timeOrigin + entry.startTime;
+
+        if (isLikelyMediaUrl(entry.name)
+            && (!isInstagramPage || entryTime >= instagramCandidatesStartedAt)) {
           candidates.push(createExperimentalCandidate(
             entry.name,
             isInstagramPage ? "instagram.performance" : "performance",
-            performance.timeOrigin + entry.startTime));
+            entryTime,
+            candidateContext));
         }
       }
     }
 
     candidates.push(...pageStreamCandidates);
 
+    if (isInstagramPage) {
+      const hasLiveMediaCandidate = candidates.some((candidate) =>
+        isInstagramLiveMediaCandidate(candidate));
+
+      if (!visibleVideo || !hasLiveMediaCandidate) {
+        candidates.push(...getInstagramScriptMediaCandidates(candidateContext));
+      }
+    }
+
     return rankExperimentalCandidates(candidates.filter(Boolean));
+  }
+
+  function isInstagramLiveMediaCandidate(candidate) {
+    return Boolean(candidate
+      && candidate.source !== "instagram.script"
+      && [
+        "hls",
+        "dash",
+        "direct-mp4",
+        "direct-webm",
+        "direct-video"
+      ].includes(candidate.type)
+      && isLikelyMediaUrl(candidate.url));
   }
 
   function createExperimentalCandidate(rawUrl, source, time, context) {
@@ -1069,12 +1148,16 @@
         return null;
       }
 
+      const mediaPageUrl = getPlatform() === "instagram"
+        ? context?.mediaPageUrl || getInstagramMediaUrl(context?.video)
+        : null;
+
       return {
         url: parsed.href,
         type: getCandidateType(parsed.href),
         source,
         time: time || Date.now(),
-        pageUrl: context?.pageUrl || location.href,
+        pageUrl: mediaPageUrl || context?.pageUrl || location.href,
         origin: context?.origin || location.origin,
         userAgent: context?.userAgent || navigator.userAgent || ""
       };
@@ -1098,6 +1181,44 @@
     }
 
     sendStreamCandidateToBackground(candidate);
+  }
+
+  function syncInstagramMediaContext(visibleVideo, mediaPageUrl) {
+    const videoSource = visibleVideo?.currentSrc || visibleVideo?.src || "";
+    const contextKey = `${mediaPageUrl || location.href}|${videoSource}`;
+
+    if (!lastInstagramMediaContext) {
+      lastInstagramMediaContext = contextKey;
+      return;
+    }
+
+    if (contextKey === lastInstagramMediaContext) {
+      return;
+    }
+
+    lastInstagramMediaContext = contextKey;
+    resetInstagramMediaCandidates();
+    lastInstagramMediaContext = contextKey;
+  }
+
+  function resetInstagramMediaCandidates() {
+    instagramCandidatesStartedAt = Date.now();
+    pageStreamCandidates = [];
+    clearBackgroundTabCandidates();
+  }
+
+  function clearBackgroundTabCandidates() {
+    if (!hasRuntime()) {
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage({ type: "dlp-clear-tab-candidates" }, () => {
+        void chrome.runtime.lastError;
+      });
+    } catch {
+      // The page may outlive an extension reload.
+    }
   }
 
   function sendStreamCandidateToBackground(candidate) {
@@ -1358,8 +1479,10 @@
       score += 60;
     }
 
-    if (String(candidate.source).startsWith("instagram.video.")) {
-      score += 150;
+    if (String(candidate.source).startsWith("instagram.video.visible.")) {
+      score += 240;
+    } else if (String(candidate.source).startsWith("instagram.video.")) {
+      score += 60;
     } else if (candidate.source === "video.currentSrc") {
       score += 140;
     } else if (candidate.source === "video.src" || candidate.source === "source.src") {
@@ -1367,7 +1490,7 @@
     } else if (candidate.source === "instagram.performance") {
       score += 55;
     } else if (candidate.source === "instagram.script") {
-      score += 45;
+      score += 5;
     } else if (candidate.source === "performance") {
       score += 16;
     } else if (String(candidate.source).startsWith("meta.")) {
@@ -1397,7 +1520,8 @@
         seen.add(candidate.url);
         return true;
       })
-      .sort((first, second) => experimentalCandidateScore(second) - experimentalCandidateScore(first))
+      .sort((first, second) => experimentalCandidateScore(second) - experimentalCandidateScore(first)
+        || (second.time || 0) - (first.time || 0))
       .slice(0, 20);
   }
 
@@ -1420,15 +1544,15 @@
         || isLikelyMediaUrl(candidate.url)));
   }
 
-  function waitForExperimentalCandidates(callback, forceExperimental, forceDeepScan) {
+  function waitForExperimentalCandidates(callback, forceExperimental, forceDeepScan, preferredVideo = null) {
     const platform = getPlatform();
     const deepScan = Boolean(forceDeepScan || settings.deepScanner);
 
     if (!shouldWaitForExperimentalCandidates(forceExperimental, forceDeepScan)) {
       callback(platform === "instagram"
-        ? getExperimentalCandidates(false)
+        ? getExperimentalCandidates(false, preferredVideo)
         : !platform && (forceExperimental || settings.experimentalAllSites)
-        ? getExperimentalCandidates(false)
+        ? getExperimentalCandidates(false, preferredVideo)
         : []);
       return;
     }
@@ -1437,7 +1561,7 @@
     const waitMs = platform === "instagram" ? INSTAGRAM_SCAN_WAIT_MS : DEEP_SCAN_WAIT_MS;
 
     const poll = () => {
-      const candidates = getExperimentalCandidates(deepScan);
+      const candidates = getExperimentalCandidates(deepScan, preferredVideo);
 
       if (hasReadyExperimentalCandidate(candidates) || Date.now() - startedAt >= waitMs) {
         callback(candidates);
@@ -1467,6 +1591,42 @@
         const secondRect = second.getBoundingClientRect();
         return getVisibleArea(secondRect) - getVisibleArea(firstRect);
       })[0] || null;
+  }
+
+  function getInstagramActiveVideo() {
+    if (!extensionActive) {
+      return null;
+    }
+
+    return Array.from(document.querySelectorAll("video"))
+      .map((video) => {
+        const rect = video.getBoundingClientRect();
+
+        if (rect.width < 120
+            || rect.height < 120
+            || !isRectVisible(rect)
+            || video.closest("[hidden], [aria-hidden=\"true\"]")) {
+          return null;
+        }
+
+        let score = getVisibleArea(rect);
+
+        if (!video.paused && !video.ended) {
+          score += 2_000_000;
+        }
+
+        if (video.currentTime > 0) {
+          score += 100_000;
+        }
+
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          score += 10_000;
+        }
+
+        return { video, score };
+      })
+      .filter(Boolean)
+      .sort((first, second) => second.score - first.score)[0]?.video || null;
   }
 
   function getVisibleMediaFrame() {
@@ -1594,11 +1754,22 @@
   }
 
   function getInstagramPlayerElement() {
-    return getVisibleVideo();
+    return getInstagramActiveVideo();
   }
 
-  function getInstagramMediaUrl() {
+  function getInstagramMediaUrl(preferredVideo = null) {
     const currentUrl = normalizeInstagramMediaUrl(location.href);
+    const video = preferredVideo || getInstagramActiveVideo();
+    const container = video?.closest("article")
+      || video?.closest('[role="dialog"]')
+      || video?.closest("main")
+      || document;
+    const linkedUrl = findFirstMatchingLink(container, isInstagramVideoPageUrl);
+    const linkedMediaUrl = linkedUrl ? normalizeInstagramMediaUrl(linkedUrl) : null;
+
+    if (preferredVideo && linkedMediaUrl) {
+      return linkedMediaUrl;
+    }
 
     if (currentUrl) {
       return currentUrl;
@@ -1613,14 +1784,7 @@
       return canonicalUrl;
     }
 
-    const video = getVisibleVideo();
-    const container = video?.closest("article")
-      || video?.closest('[role="dialog"]')
-      || video?.closest("main")
-      || document;
-    const linkedUrl = findFirstMatchingLink(container, isInstagramMediaUrl);
-
-    return linkedUrl ? normalizeInstagramMediaUrl(linkedUrl) : null;
+    return linkedMediaUrl;
   }
 
   function getXPlayerElement() {
@@ -2172,12 +2336,30 @@
     showButtonForInteraction();
   }
 
+  function getButtonTargetVideo(button) {
+    const targetVideo = button?.__dlpTargetVideo;
+
+    return targetVideo instanceof HTMLVideoElement && document.contains(targetVideo)
+      ? targetVideo
+      : null;
+  }
+
   function sendDownload(button) {
     if (!hasRuntime()) {
       showToast("Reload the DLP extension", "error");
       deactivateExtensionUi();
       return;
     }
+
+    const targetVideo = getButtonTargetVideo(button);
+    const requestPageUrl = location.href;
+    const requestUrl = getDownloadUrl(targetVideo);
+    const requestTitle = getMediaTitle();
+    const instagramRequest = getPlatform() === "instagram";
+    const mediaVideo = targetVideo || (instagramRequest ? getInstagramActiveVideo() : null);
+    const requestMediaPageUrl = instagramRequest
+      ? getInstagramMediaUrl(targetVideo)
+      : null;
 
     setButtonStatus(button, "sending", "...");
     button.disabled = true;
@@ -2189,9 +2371,15 @@
         chrome.runtime.sendMessage(
           {
             type: "dlp-download-current-video",
-            url: getDownloadUrl(),
-            title: getMediaTitle(),
-            pageUrl: location.href,
+            url: requestUrl,
+            title: requestTitle,
+            pageUrl: requestPageUrl,
+            mediaPageUrl: requestMediaPageUrl || requestPageUrl,
+            preferPageUrl: instagramRequest && Boolean(requestMediaPageUrl),
+            mediaDuration: mediaVideo && Number.isFinite(mediaVideo.duration)
+              ? mediaVideo.duration
+              : null,
+            candidateStartedAt: instagramRequest ? instagramCandidatesStartedAt : 0,
             userAgent: navigator.userAgent,
             deepScanner: Boolean(settings.deepScanner),
             candidates
@@ -2229,7 +2417,7 @@
         console.log("DLP extension context ended:", error && error.message ? error.message : error);
         deactivateExtensionUi();
       }
-    }, false, Boolean(settings.deepScanner));
+    }, false, Boolean(settings.deepScanner), targetVideo);
   }
 
   function isStreamCandidate(candidate) {
@@ -3009,6 +3197,11 @@
       button = createButton();
     }
 
+    button.__dlpTargetVideo = platform === "instagram"
+      && player instanceof HTMLVideoElement
+      ? player
+      : null;
+
     button.title = settings.streamOverlay ? "Show stream links" : "Download with DLP";
     button.setAttribute("aria-label", settings.streamOverlay ? "Show stream links" : "Download with DLP");
 
@@ -3067,6 +3260,12 @@
     const notify = () => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
+
+        if (getPlatform() === "instagram") {
+          resetInstagramMediaCandidates();
+          lastInstagramMediaContext = "";
+        }
+
         showButtonForInteraction();
         scheduleRefresh();
       }
@@ -3106,6 +3305,10 @@
           sendResponse({
             url: getPlatform() === "instagram" ? getDownloadUrl() : candidates[0]?.url || location.href,
             title: getMediaTitle(),
+            mediaPageUrl: getPlatform() === "instagram" ? getInstagramMediaUrl() : "",
+            mediaDuration: getPlatform() === "instagram"
+              ? getInstagramActiveVideo()?.duration
+              : null,
             candidates
           });
         }, true, deepScan);
@@ -3116,6 +3319,10 @@
       sendResponse({
         url: getDownloadUrl(),
         title: getMediaTitle(),
+        mediaPageUrl: getPlatform() === "instagram" ? getInstagramMediaUrl() : "",
+        mediaDuration: getPlatform() === "instagram"
+          ? getInstagramActiveVideo()?.duration
+          : null,
         candidates: []
       });
 

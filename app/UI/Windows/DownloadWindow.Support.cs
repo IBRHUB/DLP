@@ -102,9 +102,7 @@ internal sealed partial class DownloadWindow
         }
 
         _browserSelect.SelectedIndex = 0;
-        _browserSelect.Width = 132;
-        _browserSelect.Height = 32;
-        _browserSelect.Visibility = Visibility.Collapsed;
+        UpdateBrowserComboEnabled();
     }
 
     private void ApplyInitialCookieBrowser()

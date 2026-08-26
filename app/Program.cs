@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.IO.Pipes;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -10,6 +11,8 @@ using Forms = System.Windows.Forms;
 
 internal static class Program
 {
+    private const string InstanceMutexName = @"Local\DLP_MainWindow";
+    private const string InstancePipeName = "DLP_MainWindow";
     private static readonly string[] DownloadMediaExtensions =
     [
         ".mp4",
@@ -23,6 +26,8 @@ internal static class Program
         ".flac",
         ".aac"
     ];
+    private static Mutex? InstanceMutex;
+    private static DownloadWindow? ActiveWindow;
 
     [STAThread]
     private static int Main(string[] args)
@@ -54,6 +59,31 @@ internal static class Program
             return LiveHlsProxy.RunVlcAsync(streamUrl, title, referer, userAgent).GetAwaiter().GetResult();
         }
 
+        if (string.IsNullOrWhiteSpace(url)
+            && string.IsNullOrWhiteSpace(openDownload)
+            && !openApp
+            && !openDownloads
+            && NativeMessagingHost.IsNativeMessagingInvocation())
+        {
+            return NativeMessagingHost.RunAsync().GetAwaiter().GetResult();
+        }
+
+        if (!silent)
+        {
+            if (TryForwardToExistingInstance(args))
+            {
+                return 0;
+            }
+
+            if (!TryBecomePrimaryInstance())
+            {
+                Log("DLP window is already running but did not accept the request");
+                return 1;
+            }
+
+            StartInstanceCommandServer();
+        }
+
         if (!string.IsNullOrWhiteSpace(openDownload))
         {
             OpenDownloadedFile(openDownload);
@@ -78,11 +108,6 @@ internal static class Program
         {
             OpenDownloadFolder();
             return 0;
-        }
-
-        if (string.IsNullOrWhiteSpace(url) && NativeMessagingHost.IsNativeMessagingInvocation())
-        {
-            return NativeMessagingHost.RunAsync().GetAwaiter().GetResult();
         }
 
         if (string.IsNullOrWhiteSpace(url))
@@ -143,6 +168,168 @@ internal static class Program
     private static bool HasSwitch(string[] args, string name)
     {
         return args.Any(arg => string.Equals(arg, name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool TryForwardToExistingInstance(string[] args)
+    {
+        if (!HasExistingInstance())
+        {
+            return false;
+        }
+
+        string payload = JsonSerializer.Serialize(args);
+
+        for (int attempt = 0; attempt < 20; attempt++)
+        {
+            try
+            {
+                using NamedPipeClientStream client = new(
+                    ".",
+                    InstancePipeName,
+                    PipeDirection.Out,
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                client.Connect(150);
+
+                using StreamWriter writer = new(client, Encoding.UTF8, 4096, leaveOpen: false)
+                {
+                    AutoFlush = true
+                };
+                writer.WriteLine(payload);
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                Thread.Sleep(50);
+            }
+            catch (IOException)
+            {
+                Thread.Sleep(50);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasExistingInstance()
+    {
+        try
+        {
+            using Mutex existing = Mutex.OpenExisting(InstanceMutexName);
+            return true;
+        }
+        catch (WaitHandleCannotBeOpenedException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
+    }
+
+    private static bool TryBecomePrimaryInstance()
+    {
+        InstanceMutex = new Mutex(initiallyOwned: false, InstanceMutexName);
+
+        try
+        {
+            if (InstanceMutex.WaitOne(0))
+            {
+                return true;
+            }
+        }
+        catch (AbandonedMutexException)
+        {
+            return true;
+        }
+
+        InstanceMutex.Dispose();
+        InstanceMutex = null;
+        return false;
+    }
+
+    private static void StartInstanceCommandServer()
+    {
+        _ = Task.Run(async () =>
+        {
+            while (true)
+            {
+                try
+                {
+                    using NamedPipeServerStream server = new(
+                        InstancePipeName,
+                        PipeDirection.In,
+                        1,
+                        PipeTransmissionMode.Byte,
+                        PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                    await server.WaitForConnectionAsync();
+
+                    using StreamReader reader = new(server, Encoding.UTF8, false, 4096, leaveOpen: false);
+                    string? line = await reader.ReadLineAsync();
+
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    string[]? forwardedArgs = JsonSerializer.Deserialize<string[]>(line);
+
+                    if (forwardedArgs is null || System.Windows.Application.Current is null)
+                    {
+                        continue;
+                    }
+
+                    System.Windows.Application.Current.Dispatcher.BeginInvoke(
+                        new Action(() => HandleForwardedArguments(forwardedArgs)));
+                }
+                catch (Exception ex)
+                {
+                    Log($"Instance command server failed: {ex.Message}");
+                    await Task.Delay(100);
+                }
+            }
+        });
+    }
+
+    private static void HandleForwardedArguments(string[] args)
+    {
+        DownloadWindow? window = ActiveWindow;
+
+        if (window is null)
+        {
+            return;
+        }
+
+        string? openDownload = ReadOption(args, "--open-download");
+        string? url = NormalizeOptionalHttpsUrl(ReadOption(args, "--url"));
+
+        if (!string.IsNullOrWhiteSpace(openDownload))
+        {
+            OpenDownloadedFile(openDownload);
+            return;
+        }
+
+        if (HasSwitch(args, "--open-downloads"))
+        {
+            window.OpenDownloadsFromExternalRequest();
+            return;
+        }
+
+        if (HasSwitch(args, "--open-app") || string.IsNullOrWhiteSpace(url))
+        {
+            window.ActivateFromExternalRequest();
+            return;
+        }
+
+        window.ApplyExternalRequest(
+            url,
+            NormalizeOptionalHttpsUrl(ReadOption(args, "--audio-url")),
+            NormalizeOptionalHttpsUrl(ReadOption(args, "--fallback-url")),
+            ReadOption(args, "--source") ?? "browser",
+            ReadOption(args, "--title"),
+            NormalizeOptionalHttpsUrl(ReadOption(args, "--referer")),
+            NormalizeHeaderValue(ReadOption(args, "--user-agent"), 512),
+            NormalizeCookieBrowser(ReadOption(args, "--browser-cookies")));
     }
 
     public static string GetDownloadDirectory() => Path.Combine(
@@ -281,13 +468,25 @@ internal static class Program
             userAgent,
             cookieBrowser);
 
-        if (ownsApplication)
-        {
-            application.Run(window);
-            return;
-        }
+        ActiveWindow = window;
 
-        window.ShowDialog();
+        try
+        {
+            if (ownsApplication)
+            {
+                application.Run(window);
+                return;
+            }
+
+            window.ShowDialog();
+        }
+        finally
+        {
+            if (ReferenceEquals(ActiveWindow, window))
+            {
+                ActiveWindow = null;
+            }
+        }
     }
 
     public static void Log(string message)
@@ -903,7 +1102,6 @@ internal static class NativeMessagingHost
         {
             ok = true,
             action = "list_downloads",
-            directory = downloadDirectory,
             folderAccess = initialFolderAccess,
             files
         };

@@ -21,6 +21,25 @@ const DEFAULT_SETTINGS = {
 };
 
 const COOKIE_BROWSERS = new Set(["brave", "chrome", "edge", "firefox", "opera", "vivaldi", "chromium", "whale"]);
+const OVERLAY_POSITIONS = new Set([
+  "auto",
+  "top-right",
+  "top-center",
+  "top-left",
+  "bottom-right",
+  "bottom-center",
+  "bottom-left"
+]);
+const NATIVE_COMMANDS = new Set([
+  "ping",
+  "open_app",
+  "open_folder",
+  "download_folder_status",
+  "unlock_download_folder",
+  "lock_download_folder",
+  "list_downloads",
+  "open_download"
+]);
 
 const tabCandidates = new Map();
 let settingsCache = { ...DEFAULT_SETTINGS };
@@ -60,10 +79,39 @@ const EXPERIMENTAL_DOCUMENT_URL_PATTERNS = [
 
 function getSettings(callback) {
   chrome.storage.local.get(DEFAULT_SETTINGS, (storedSettings) => {
-    settingsCache = { ...DEFAULT_SETTINGS, ...storedSettings };
+    if (chrome.runtime.lastError) {
+      console.log("DLP settings error:", chrome.runtime.lastError.message);
+      settingsCache = { ...DEFAULT_SETTINGS };
+    } else {
+      settingsCache = normalizeSettings(storedSettings);
+    }
+
     settingsCacheLoaded = true;
     callback(settingsCache);
   });
+}
+
+function normalizeSettings(storedSettings) {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    ...(storedSettings && typeof storedSettings === "object" ? storedSettings : {})
+  };
+  const cookieBrowser = String(settings.cookieBrowser || "").toLowerCase();
+
+  return {
+    silentDownload: Boolean(settings.silentDownload),
+    autoHideOverlay: Boolean(settings.autoHideOverlay),
+    overlayPosition: OVERLAY_POSITIONS.has(settings.overlayPosition)
+      ? settings.overlayPosition
+      : DEFAULT_SETTINGS.overlayPosition,
+    experimentalAllSites: Boolean(settings.experimentalAllSites),
+    deepScanner: Boolean(settings.deepScanner),
+    streamOverlay: Boolean(settings.streamOverlay),
+    browserCookies: Boolean(settings.browserCookies),
+    cookieBrowser: COOKIE_BROWSERS.has(cookieBrowser)
+      ? cookieBrowser
+      : DEFAULT_SETTINGS.cookieBrowser
+  };
 }
 
 function getSafeHttpsUrl(url) {
@@ -93,10 +141,15 @@ function getCookieBrowser(settings) {
 }
 
 function getContextMenuUrl(info, tab) {
-  return info.linkUrl
-    || getSafeHttpsUrl(info.srcUrl)
-    || info.pageUrl
-    || (tab && tab.url);
+  for (const candidate of [info.linkUrl, info.srcUrl, info.pageUrl, tab?.url]) {
+    const safeUrl = getSafeHttpsUrl(candidate);
+
+    if (safeUrl) {
+      return safeUrl;
+    }
+  }
+
+  return null;
 }
 
 function getCandidateType(url) {
@@ -180,6 +233,18 @@ function decodeInstagramBase64Value(value) {
     return atob(padded);
   } catch {
     return "";
+  }
+}
+
+function getInstagramMediaDuration(url) {
+  try {
+    const parsed = new URL(url);
+    const metadata = JSON.parse(decodeInstagramBase64Value(parsed.searchParams.get("efg")));
+    const duration = Number(metadata.duration_s ?? metadata.duration);
+
+    return Number.isFinite(duration) && duration > 0 ? duration : null;
+  } catch {
+    return null;
   }
 }
 
@@ -354,7 +419,10 @@ function toCandidate(url, source, time, context) {
     time: time || Date.now(),
     pageUrl: context?.pageUrl || "",
     origin: context?.origin || "",
-    userAgent: context?.userAgent || ""
+    userAgent: context?.userAgent || "",
+    contentType: context?.contentType || "",
+    statusCode: Number(context?.statusCode) || 0,
+    requestId: context?.requestId || ""
   };
 }
 
@@ -470,13 +538,21 @@ function candidateScore(item) {
   } else if (item.source === "instagram.script") {
     score += 45;
   } else if (item.source === "network.headers") {
-    score += 70;
+    score += 180;
   } else if (item.source === "network") {
     score += 24;
   } else if (item.source === "performance") {
     score += 16;
   } else if (String(item.source).startsWith("meta.")) {
     score += 4;
+  }
+
+  const contentType = String(item.contentType || "").toLowerCase();
+
+  if (contentType.startsWith("video/")) {
+    score += 220;
+  } else if (contentType.startsWith("audio/")) {
+    score -= 220;
   }
 
   score += Math.min(20, Math.max(0, 20 - (ageMs / 30000)));
@@ -492,7 +568,8 @@ function candidateScore(item) {
 
 function rankCandidates(items) {
   return dedupeCandidates(items.map(normalizeCandidate).filter(Boolean))
-    .sort((first, second) => candidateScore(second) - candidateScore(first))
+    .sort((first, second) => candidateScore(second) - candidateScore(first)
+      || (second.time || 0) - (first.time || 0))
     .slice(0, 20);
 }
 
@@ -564,7 +641,10 @@ function isInstagramHost(host) {
 function isInstagramCdnHost(host) {
   return host === "cdninstagram.com"
     || host.endsWith(".cdninstagram.com")
-    || (host.includes("instagram") && host.endsWith(".fbcdn.net"));
+    || (host.endsWith(".fbcdn.net")
+      && (host.startsWith("video.")
+        || host.startsWith("scontent.")
+        || host.includes("instagram")));
 }
 
 function isInstagramCdnMediaUrl(url) {
@@ -701,11 +781,19 @@ function chooseDownloadUrl(preferredUrl, details) {
   const normalizedPreferredInstagramUrl = normalizeInstagramMediaUrl(preferredSafeUrl);
 
   if (normalizedPageInstagramUrl || normalizedPreferredInstagramUrl) {
-    const instagramDirectCandidate = chooseInstagramDirectMediaCandidate(details.candidates);
+    const instagramDirectCandidate = chooseInstagramDirectMediaCandidate(
+      details.candidates,
+      normalizedPageInstagramUrl || normalizedPreferredInstagramUrl,
+      details.mediaDuration);
 
     if (instagramDirectCandidate) {
       return instagramDirectCandidate.url;
     }
+
+  }
+
+  if (details.preferPageUrl && (normalizedPageInstagramUrl || normalizedPreferredInstagramUrl)) {
+    return null;
   }
 
   if (normalizedPageInstagramUrl) {
@@ -733,7 +821,7 @@ function chooseDownloadUrl(preferredUrl, details) {
   }
 
   if (!details.settings?.experimentalAllSites || isSupportedPageUrl(pageUrl)) {
-    return preferredSafeUrl || preferredUrl;
+    return preferredSafeUrl;
   }
 
   if (details.preservePreferredUrl && preferredSafeUrl) {
@@ -755,9 +843,36 @@ function chooseDownloadUrl(preferredUrl, details) {
   return bestCandidate?.url || preferredSafeUrl || preferredUrl;
 }
 
-function chooseInstagramDirectMediaCandidate(candidates) {
-  return rankCandidates(candidates || []).find((candidate) =>
-    isUsableDirectMediaCandidate(candidate));
+function chooseInstagramDirectMediaCandidate(candidates, currentPageUrl, targetDuration) {
+  const scopedCandidates = scopeCandidatesToInstagramPage(candidates, currentPageUrl);
+  const rankedCandidates = rankCandidates(scopedCandidates)
+    .filter((candidate) => isUsableDirectMediaCandidate(candidate));
+
+  if (!Number.isFinite(targetDuration) || targetDuration <= 0) {
+    return rankedCandidates[0];
+  }
+
+  const durationTolerance = Math.max(0.75, Math.min(3, targetDuration * 0.05));
+  const matchingDuration = rankedCandidates.find((candidate) => {
+    const candidateDuration = getInstagramMediaDuration(candidate.url);
+    return candidateDuration !== null
+      && Math.abs(candidateDuration - targetDuration) <= durationTolerance;
+  });
+
+  return matchingDuration || rankedCandidates[0];
+}
+
+function scopeCandidatesToInstagramPage(candidates, currentPageUrl) {
+  const currentPageKey = normalizeInstagramMediaUrl(currentPageUrl);
+
+  if (!currentPageKey) {
+    return candidates || [];
+  }
+
+  return (candidates || []).filter((candidate) => {
+    const candidatePageKey = normalizeInstagramMediaUrl(candidate.pageUrl);
+    return !candidatePageKey || candidatePageKey === currentPageKey;
+  });
 }
 
 function isUsableDirectMediaCandidate(candidate) {
@@ -790,9 +905,12 @@ function chooseFallbackMedia(candidates, primaryUrl, mediaPair) {
 function scanPageCandidates(tab, settings, callback) {
   const shouldScanSupportedPage = isInstagramPageUrl(tab?.url);
 
-  if (!tab?.id || (!settings.experimentalAllSites && !shouldScanSupportedPage) || (isSupportedPageUrl(tab.url) && !shouldScanSupportedPage)) {
-    callback([]);
-    return;
+  if (typeof tab?.id !== "number"
+      || tab.id < 0
+      || (!settings.experimentalAllSites && !shouldScanSupportedPage)
+      || (isSupportedPageUrl(tab.url) && !shouldScanSupportedPage)) {
+      callback({ candidates: [], mediaPageUrl: "" });
+      return;
   }
 
   chrome.tabs.sendMessage(
@@ -804,11 +922,17 @@ function scanPageCandidates(tab, settings, callback) {
     },
     (response) => {
       if (chrome.runtime.lastError) {
-        callback([]);
+        callback({ candidates: [], mediaPageUrl: "" });
         return;
       }
 
-      callback(Array.isArray(response?.candidates) ? response.candidates : []);
+      callback({
+        candidates: Array.isArray(response?.candidates) ? response.candidates : [],
+        mediaPageUrl: response?.mediaPageUrl || "",
+        mediaDuration: Number.isFinite(Number(response?.mediaDuration))
+          ? Number(response.mediaDuration)
+          : null
+      });
     }
   );
 }
@@ -821,7 +945,10 @@ function rememberNetworkCandidate(details, source = "network", force = false) {
   const candidate = toCandidate(details.url, source, undefined, {
     pageUrl: details.documentUrl || details.initiator || "",
     origin: details.initiator || "",
-    userAgent: navigator.userAgent || ""
+    userAgent: navigator.userAgent || "",
+    contentType: getResponseHeaderValue(details, "content-type"),
+    statusCode: details.statusCode || 0,
+    requestId: details.requestId || ""
   });
 
   if (!candidate) {
@@ -859,20 +986,23 @@ function sendNativePayload(payload, callback) {
       return;
     }
 
-    console.log("DLP native host response:", response);
-
     if (callback) {
-      callback(response);
+      callback(response || {
+        ok: false,
+        error: "empty_native_response",
+        message: "DLP did not respond"
+      });
     }
   });
 }
 
 function sendDownloadWithSettings(url, options, settings, callback) {
   const details = options || {};
+  const safeUrl = getSafeHttpsUrl(url);
   const audioUrl = getSafeHttpsUrl(details.audioUrl);
   const fallbackUrl = getSafeHttpsUrl(details.fallbackUrl);
 
-  if (!url) {
+  if (!safeUrl) {
     const error = {
       ok: false,
       error: "missing_url",
@@ -890,7 +1020,7 @@ function sendDownloadWithSettings(url, options, settings, callback) {
 
   sendNativePayload({
     action: "download",
-    url,
+    url: safeUrl,
     ...(audioUrl ? { audioUrl } : {}),
     ...(fallbackUrl ? { fallbackUrl } : {}),
     title: details.title || "",
@@ -909,6 +1039,15 @@ function sendNativeCommand(action, details, callback) {
   if (typeof details === "function") {
     callback = details;
     details = {};
+  }
+
+  if (!NATIVE_COMMANDS.has(action)) {
+    callback?.({
+      ok: false,
+      error: "unsupported_action",
+      message: "Unsupported DLP command"
+    });
+    return;
   }
 
   sendNativePayload({
@@ -1172,11 +1311,15 @@ getSettings(() => {});
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === "local") {
+    const updatedSettings = { ...settingsCache };
+
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
       if (Object.prototype.hasOwnProperty.call(changes, key)) {
-        settingsCache[key] = changes[key].newValue ?? DEFAULT_SETTINGS[key];
+        updatedSettings[key] = changes[key].newValue ?? DEFAULT_SETTINGS[key];
       }
     }
+
+    settingsCache = normalizeSettings(updatedSettings);
   }
 
   if (areaName === "local" && Object.prototype.hasOwnProperty.call(changes, "experimentalAllSites")) {
@@ -1193,22 +1336,33 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   const clickedUrl = getSafeHttpsUrl(info.linkUrl) || getSafeHttpsUrl(info.srcUrl);
 
   getSettings((settings) => {
-    scanPageCandidates(tab, settings, (pageCandidates) => {
+    scanPageCandidates(tab, settings, (scanResult) => {
+      const pageCandidates = Array.isArray(scanResult)
+        ? scanResult
+        : scanResult.candidates;
       const candidates = [
         ...pageCandidates,
         ...getTabCandidates(tab?.id),
         ...(clickedUrl ? [toCandidate(clickedUrl, "context")] : [])
       ].filter(Boolean);
-      const mediaPair = findMediaPair(candidates);
+      const candidatePageUrl = (!Array.isArray(scanResult) && scanResult.mediaPageUrl)
+        || tab?.url
+        || info.pageUrl;
+      const candidateDuration = !Array.isArray(scanResult)
+        ? scanResult.mediaDuration
+        : null;
+      const scopedCandidates = scopeCandidatesToInstagramPage(candidates, candidatePageUrl);
+      const mediaPair = findMediaPair(scopedCandidates);
 
       const url = chooseDownloadUrl(preferredUrl, {
         settings,
-        pageUrl: tab?.url || info.pageUrl,
+        pageUrl: candidatePageUrl,
+        mediaDuration: candidateDuration,
         candidates,
         preservePreferredUrl: Boolean(info.linkUrl && !isLikelyMediaUrl(info.linkUrl))
       });
       const fallbackMedia = isSupportedMediaPageUrl(url)
-        ? chooseFallbackMedia(candidates, url, mediaPair)
+        ? chooseFallbackMedia(scopedCandidates, url, mediaPair)
         : null;
 
       sendDownloadWithSettings(url, {
@@ -1242,30 +1396,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "dlp-clear-tab-candidates") {
+    const tabId = sender.tab?.id;
+
+    if (typeof tabId === "number" && tabId >= 0) {
+      tabCandidates.delete(tabId);
+    }
+
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (message.type === "dlp-download-current-video") {
     const preferredUrl = message.url || (sender.tab && sender.tab.url);
     const title = message.title || (sender.tab && sender.tab.title) || "";
+    const mediaPageUrl = message.mediaPageUrl || message.pageUrl || sender.tab?.url;
+    const candidateStartedAt = Number(message.candidateStartedAt);
 
     getSettings((settings) => {
-      const candidates = [
+      const allCandidates = [
         ...(Array.isArray(message.candidates) ? message.candidates : []),
         ...getTabCandidates(sender.tab?.id)
       ];
-      const mediaPair = findMediaPair(candidates);
+      const candidates = Number.isFinite(candidateStartedAt)
+        ? allCandidates.filter((candidate) => !candidate.time || candidate.time >= candidateStartedAt)
+        : allCandidates;
       const url = chooseDownloadUrl(preferredUrl, {
         settings,
-        pageUrl: message.pageUrl || sender.tab?.url,
+        pageUrl: mediaPageUrl,
+        preferPageUrl: Boolean(message.preferPageUrl),
+        mediaDuration: Number.isFinite(Number(message.mediaDuration))
+          ? Number(message.mediaDuration)
+          : null,
         candidates
       });
-      const fallbackMedia = isSupportedMediaPageUrl(url)
-        ? chooseFallbackMedia(candidates, url, mediaPair)
+      const scopedCandidates = scopeCandidatesToInstagramPage(candidates, mediaPageUrl);
+      const scopedMediaPair = findMediaPair(scopedCandidates);
+      const fallbackMedia = !message.preferPageUrl && isSupportedMediaPageUrl(url)
+        ? chooseFallbackMedia(scopedCandidates, url, scopedMediaPair)
         : null;
 
       sendDownloadWithSettings(url, {
         title,
         pageUrl: message.pageUrl || sender.tab?.url || "",
         userAgent: message.userAgent || navigator.userAgent || "",
-        audioUrl: mediaPair?.videoUrl === getSafeHttpsUrl(url) ? mediaPair.audioUrl : "",
+        audioUrl: scopedMediaPair?.videoUrl === getSafeHttpsUrl(url) ? scopedMediaPair.audioUrl : "",
         fallbackUrl: fallbackMedia || ""
       }, settings, sendResponse);
     });

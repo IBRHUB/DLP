@@ -1,6 +1,5 @@
 const videosElement = document.getElementById("videos");
 const refreshButton = document.getElementById("refreshVideos");
-const downloadPathElement = document.getElementById("downloadPath");
 const folderStatusElement = document.getElementById("folderStatus");
 const unlockFolderButton = document.getElementById("unlockFolder");
 const lockFolderButton = document.getElementById("lockFolder");
@@ -56,7 +55,9 @@ function formatSize(bytes) {
 
 function formatTime(value) {
   const date = new Date(value || "");
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 function formatFileCount(count) {
@@ -246,11 +247,11 @@ function unlockFolder() {
   unlockFolderButton.textContent = "Opening";
 
   sendNativeCommand("unlock_download_folder", { open: true }, (response) => {
-    renderFolderAccess(response.folderAccess);
+    renderFolderAccess(response?.folderAccess);
 
-    if (!response.ok) {
+    if (!response?.ok) {
       unlockFolderButton.textContent = "Open failed";
-      window.setTimeout(() => renderFolderAccess(response.folderAccess), 1400);
+      window.setTimeout(() => renderFolderAccess(response?.folderAccess), 1400);
       return;
     }
 
@@ -263,7 +264,7 @@ function lockFolder() {
   lockFolderButton.textContent = "Locking";
 
   sendNativeCommand("lock_download_folder", {}, (response) => {
-    renderFolderAccess(response.folderAccess);
+    renderFolderAccess(response?.folderAccess);
     lockFolderButton.textContent = "Lock now";
     loadDownloads();
   });
@@ -275,13 +276,13 @@ function openDownload(fileName, button) {
 
   sendNativeCommand("open_download", { fileName }, (response) => {
     button.disabled = false;
-    button.textContent = response.ok ? "Open" : "Open failed";
+    button.textContent = response?.ok ? "Open" : "Open failed";
 
-    if (response.ok) {
+    if (response?.ok) {
       loadDownloads();
     }
 
-    if (!response.ok) {
+    if (!response?.ok) {
       window.setTimeout(() => {
         button.textContent = "Open";
       }, 1600);
@@ -650,7 +651,6 @@ function loadDownloads() {
   refreshButton.textContent = "Refreshing";
   videosElement.replaceChildren();
   appendText(videosElement, "Loading", "empty");
-  downloadPathElement.textContent = "";
   setPreviewMessage("Loading downloads", "Reading the DLP folder");
   viewerFrameElement.setAttribute("aria-label", "Loading downloads");
   viewerPlayButton.disabled = true;
@@ -660,13 +660,12 @@ function loadDownloads() {
     refreshButton.disabled = false;
     refreshButton.textContent = previousText || "Refresh";
 
-    if (!response.ok) {
-      renderError(response.message);
+    if (!response?.ok) {
+      renderError(response?.message);
       return;
     }
 
     allFiles = Array.isArray(response.files) ? response.files.filter(Boolean) : [];
-    downloadPathElement.textContent = response.directory || "";
     renderFolderAccess(response.folderAccess);
     renderDownloadList();
   });

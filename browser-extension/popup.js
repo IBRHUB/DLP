@@ -9,6 +9,26 @@ const DEFAULT_SETTINGS = {
   cookieBrowser: "brave"
 };
 
+const COOKIE_BROWSERS = new Set([
+  "brave",
+  "chrome",
+  "edge",
+  "firefox",
+  "opera",
+  "vivaldi",
+  "chromium",
+  "whale"
+]);
+const OVERLAY_POSITIONS = new Set([
+  "auto",
+  "top-right",
+  "top-center",
+  "top-left",
+  "bottom-right",
+  "bottom-center",
+  "bottom-left"
+]);
+
 const silentDownloadInput = document.getElementById("silentDownload");
 const autoHideOverlayInput = document.getElementById("autoHideOverlay");
 const experimentalAllSitesInput = document.getElementById("experimentalAllSites");
@@ -21,8 +41,6 @@ const cookieBrowserRow = document.getElementById("cookieBrowserRow");
 const overlayPositionInput = document.getElementById("overlayPosition");
 const statusElement = document.getElementById("status");
 const versionElement = document.getElementById("version");
-const ibrahimLink = document.getElementById("ibrahimLink");
-const sourceLink = document.getElementById("sourceLink");
 const openAppButton = document.getElementById("openApp");
 const openFolderButton = document.getElementById("openFolder");
 const openDashboardButton = document.getElementById("openDashboard");
@@ -33,7 +51,31 @@ function setStatus(text) {
   statusElement.textContent = text;
 }
 
-function render(settings, statusText = "") {
+function normalizeSettings(storedSettings) {
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    ...(storedSettings && typeof storedSettings === "object" ? storedSettings : {})
+  };
+  const cookieBrowser = String(settings.cookieBrowser || "").toLowerCase();
+
+  return {
+    silentDownload: Boolean(settings.silentDownload),
+    autoHideOverlay: Boolean(settings.autoHideOverlay),
+    overlayPosition: OVERLAY_POSITIONS.has(settings.overlayPosition)
+      ? settings.overlayPosition
+      : DEFAULT_SETTINGS.overlayPosition,
+    experimentalAllSites: Boolean(settings.experimentalAllSites),
+    deepScanner: Boolean(settings.deepScanner),
+    streamOverlay: Boolean(settings.streamOverlay),
+    browserCookies: Boolean(settings.browserCookies),
+    cookieBrowser: COOKIE_BROWSERS.has(cookieBrowser)
+      ? cookieBrowser
+      : DEFAULT_SETTINGS.cookieBrowser
+  };
+}
+
+function render(storedSettings, statusText = "") {
+  const settings = normalizeSettings(storedSettings);
   silentDownloadInput.checked = Boolean(settings.silentDownload);
   autoHideOverlayInput.checked = Boolean(settings.autoHideOverlay);
   experimentalAllSitesInput.checked = Boolean(settings.experimentalAllSites);
@@ -101,11 +143,6 @@ function saveSettings(changes) {
   });
 }
 
-function openTab(event, url) {
-  event.preventDefault();
-  chrome.tabs.create({ url });
-}
-
 function sendNativeCommand(action, statusText) {
   setStatus(statusText);
 
@@ -135,6 +172,3 @@ openFolderButton.addEventListener("click", () => {
 openDashboardButton.addEventListener("click", () => {
   chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html#videos") });
 });
-
-ibrahimLink.addEventListener("click", (event) => openTab(event, "https://ibrhub.net"));
-sourceLink.addEventListener("click", (event) => openTab(event, "https://github.com/IBRHUB/DLP"));

@@ -14,7 +14,6 @@ using MessageBoxResult = System.Windows.MessageBoxResult;
 using WpfBrush = System.Windows.Media.Brush;
 using WpfBrushes = System.Windows.Media.Brushes;
 using WpfButton = System.Windows.Controls.Button;
-using WpfComboBox = System.Windows.Controls.ComboBox;
 using WpfDragEventArgs = System.Windows.DragEventArgs;
 using WpfKey = System.Windows.Input.Key;
 using WpfKeyEventArgs = System.Windows.Input.KeyEventArgs;
@@ -29,14 +28,13 @@ internal sealed partial class DownloadWindow : Window
     private string? _fallbackUrl;
     private string _source;
     private string? _title;
-    private readonly string? _referer;
-    private readonly string? _userAgent;
-    private readonly string? _initialCookieBrowser;
+    private string? _referer;
+    private string? _userAgent;
+    private string? _initialCookieBrowser;
     private string _downloadDirectory;
     private readonly string? _ytDlpPath;
     private readonly string? _ffmpegPath;
 
-    private readonly WpfComboBox _browserSelect = new();
     private readonly Forms.NotifyIcon _notifyIcon = new();
     private readonly Forms.ContextMenuStrip _trayMenu = new();
     private bool _isClosed;
@@ -160,7 +158,7 @@ internal sealed partial class DownloadWindow : Window
         _urlBox.Text = _url;
         _savePathBox.Text = ShortDisplayPath(_downloadDirectory);
         SetDetectedMetadata(
-            !string.IsNullOrWhiteSpace(_audioUrl) ? "Video" : "Video",
+            string.IsNullOrWhiteSpace(_url) ? "Waiting" : "Link",
             _title,
             null);
 
@@ -181,6 +179,97 @@ internal sealed partial class DownloadWindow : Window
         }
 
         SetIdleButtons();
+    }
+
+    internal void ActivateFromExternalRequest()
+    {
+        if (_isClosed)
+        {
+            return;
+        }
+
+        if (!IsVisible || WindowState == WindowState.Minimized)
+        {
+            RestoreFromTray();
+        }
+        else
+        {
+            ShowInTaskbar = true;
+            Show();
+            WindowState = WindowState.Normal;
+            Activate();
+            Focus();
+        }
+    }
+
+    internal void OpenDownloadsFromExternalRequest()
+    {
+        ActivateFromExternalRequest();
+        OpenDownloadFolder();
+    }
+
+    internal void ApplyExternalRequest(
+        string url,
+        string? audioUrl,
+        string? fallbackUrl,
+        string source,
+        string? title,
+        string? referer,
+        string? userAgent,
+        string? cookieBrowser)
+    {
+        ActivateFromExternalRequest();
+
+        if (_downloadProcess is not null
+            || _isPreparingDownload
+            || _isUpdatingApp
+            || _isUpdatingYtDlp
+            || _isProbing)
+        {
+            SetStatus("Finish the current operation first", 0);
+            return;
+        }
+
+        _url = url;
+        _audioUrl = audioUrl;
+        _fallbackUrl = fallbackUrl;
+        _source = source;
+        _title = title;
+        _referer = referer;
+        _userAgent = userAgent;
+        _initialCookieBrowser = cookieBrowser;
+
+        _videoButton.IsChecked = true;
+        _audioButton.IsChecked = false;
+        _cookiesSwitch.IsChecked = !string.IsNullOrWhiteSpace(cookieBrowser);
+        _browserSelect.SelectedIndex = 0;
+
+        if (!string.IsNullOrWhiteSpace(cookieBrowser))
+        {
+            string displayName = FormatBrowserName(cookieBrowser);
+            int index = _browserSelect.Items.IndexOf(displayName);
+
+            if (index >= 0)
+            {
+                _browserSelect.SelectedIndex = index;
+            }
+        }
+
+        UpdateBrowserComboEnabled();
+        PopulateQualityOptions([]);
+        PopulateFormatOptions(DownloadKind.Video);
+        SetInitialSourceState();
+
+        Dispatcher.BeginInvoke(new Action(async () =>
+        {
+            if (_isClosed)
+            {
+                return;
+            }
+
+            _downloadButton.Focus();
+            await ProbeSourceAsync();
+        }));
     }
 
     private async Task StartDownloadAsync()
@@ -1398,8 +1487,6 @@ internal sealed partial class DownloadWindow : Window
 
     private static string ShortDisplayPath(string path)
     {
-        string defaultDirectory = Program.GetDownloadDirectory();
-
         if (IsDefaultDownloadDirectory(path))
         {
             return "Downloads\\DLP";

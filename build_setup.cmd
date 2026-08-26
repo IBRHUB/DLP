@@ -1,12 +1,10 @@
 @echo off
-:START
 setlocal
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0build_setup.ps1" %*
 if errorlevel 1 (
     echo.
     echo Build failed.
-    pause
-    goto START
+    exit /b 1
 )
 
 echo.
@@ -15,8 +13,9 @@ echo Installing DLP...
 if errorlevel 1 (
     echo.
     echo Install failed.
+    exit /b 1
 )
 
 echo.
-pause
-goto START
+echo Build and install completed.
+exit /b 0
