@@ -7,13 +7,13 @@ Architecture flow: [docs/DLP_FLOW.md](docs/DLP_FLOW.md)
 ## What It Does
 
 - Adds a `Download with DLP` browser context menu
-- Adds a small `DLP` button above supported media players
+- Adds an unobtrusive icon-only download action above supported media players
 - Sends the current media URL to the local Windows app
 - Opens the DLP window for manual video/audio download
 - Supports silent download from the extension popup
 - Skips duplicate downloads using media id detection
 - Supports app self-update from GitHub Releases
-- Supports optional Experimental mode for HTTPS pages with visible videos
+- Supports optional all-HTTPS mode for pages with visible videos
 - Uses `yt-dlp` for downloads
 - Uses `ffmpeg` when media merging or audio conversion is needed
 
@@ -221,11 +221,11 @@ Silent mode:
 - Click the `DLP` overlay button
 - DLP downloads directly without opening the app window
 
-Experimental mode:
+All HTTPS mode:
 
 - Open the extension popup
-- Enable `Experimental`
-- DLP shows on HTTPS pages with visible videos
+- Turn on `Enable all HTTPS pages`
+- DLP shows an unobtrusive icon-only action above visible videos on HTTPS pages
 - Unsupported sites may fail if `yt-dlp` cannot read the page
 
 Duplicate detection:

@@ -2,10 +2,13 @@
   const BUTTON_ID = "dlp-video-download-button";
   const STREAM_PANEL_ID = "dlp-video-stream-panel";
   const STYLE_ID = "dlp-video-download-style";
+  const STYLE_VERSION = "2";
   const TOAST_ID = "dlp-video-download-toast";
-  const BUTTON_WIDTH = 58;
-  const BUTTON_HEIGHT = 24;
-  const BUTTON_OFFSET = 12;
+  const BUTTON_WIDTH = 30;
+  const BUTTON_HEIGHT = 30;
+  const BUTTON_OFFSET = 10;
+  const BUTTON_GAP = 7;
+  const VIEWPORT_MARGIN = 10;
   const AUTO_HIDE_DELAY_MS = 2600;
   const STREAM_PANEL_HIDE_DELAY_MS = 4200;
   const DEEP_SCAN_WAIT_MS = 1600;
@@ -45,6 +48,8 @@
   let lastActivityAt = 0;
   let extensionActive = true;
   let observer = null;
+  let targetResizeObserver = null;
+  let observedTarget = null;
   let settings = { ...DEFAULT_SETTINGS };
   let pageStreamCandidates = [];
   let tikTokScriptUrlCache = null;
@@ -98,6 +103,12 @@
 
     if (observer) {
       observer.disconnect();
+    }
+
+    if (targetResizeObserver) {
+      targetResizeObserver.disconnect();
+      targetResizeObserver = null;
+      observedTarget = null;
     }
   }
 
@@ -381,7 +392,15 @@
   function getPlatform() {
     const host = location.hostname.toLowerCase();
 
-    if (["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)) {
+    if ([
+      "youtube.com",
+      "www.youtube.com",
+      "m.youtube.com",
+      "music.youtube.com",
+      "youtu.be",
+      "youtube-nocookie.com",
+      "www.youtube-nocookie.com"
+    ].includes(host)) {
       return "youtube";
     }
 
@@ -414,6 +433,11 @@
 
   function isYouTubeShortsPage() {
     return getPlatform() === "youtube" && location.pathname.startsWith("/shorts/");
+  }
+
+  function isYouTubeEmbedPage() {
+    return getPlatform() === "youtube"
+      && /^\/(?:embed|v)\//i.test(location.pathname);
   }
 
   function toAbsoluteUrl(href) {
@@ -959,11 +983,16 @@
     const platform = getPlatform();
 
     if (platform === "youtube") {
+      if (["youtu.be"].includes(location.hostname.toLowerCase())) {
+        return location.pathname.length > 1;
+      }
+
       if (location.pathname === "/watch") {
         return new URLSearchParams(location.search).has("v");
       }
 
       return isYouTubeShortsPage()
+        || isYouTubeEmbedPage()
         || location.pathname.startsWith("/live/")
         || location.pathname.startsWith("/clip/");
     }
@@ -1582,15 +1611,41 @@
     const videos = Array.from(document.querySelectorAll("video"));
 
     return videos
-      .filter((video) => {
+      .map((video) => {
         const rect = video.getBoundingClientRect();
-        return rect.width >= 120 && rect.height >= 120 && isRectVisible(rect);
+
+        if (rect.width < 96
+            || rect.height < 96
+            || !isElementRenderable(video, rect)) {
+          return null;
+        }
+
+        let score = getVisibleArea(rect);
+
+        if (!video.paused && !video.ended) {
+          score += 1_500_000;
+        }
+
+        if (video.currentTime > 0) {
+          score += 80_000;
+        }
+
+        if (video.controls) {
+          score += 20_000;
+        }
+
+        if (video.closest("main, article, [role=\"main\"], [role=\"article\"]")) {
+          score += 10_000;
+        }
+
+        if (video.muted && video.loop && video.autoplay && !video.controls) {
+          score -= 300_000;
+        }
+
+        return { video, score };
       })
-      .sort((first, second) => {
-        const firstRect = first.getBoundingClientRect();
-        const secondRect = second.getBoundingClientRect();
-        return getVisibleArea(secondRect) - getVisibleArea(firstRect);
-      })[0] || null;
+      .filter(Boolean)
+      .sort((first, second) => second.score - first.score)[0]?.video || null;
   }
 
   function getInstagramActiveVideo() {
@@ -1602,10 +1657,9 @@
       .map((video) => {
         const rect = video.getBoundingClientRect();
 
-        if (rect.width < 120
-            || rect.height < 120
-            || !isRectVisible(rect)
-            || video.closest("[hidden], [aria-hidden=\"true\"]")) {
+        if (rect.width < 96
+            || rect.height < 96
+            || !isElementRenderable(video, rect)) {
           return null;
         }
 
@@ -1639,10 +1693,11 @@
     return frames
       .filter((frame) => {
         const rect = frame.getBoundingClientRect();
+
         return frame.src.startsWith("https://")
-          && rect.width >= 180
-          && rect.height >= 120
-          && isRectVisible(rect);
+          && rect.width >= 140
+          && rect.height >= 90
+          && isElementRenderable(frame, rect);
       })
       .sort((first, second) => {
         const firstRect = first.getBoundingClientRect();
@@ -1651,33 +1706,52 @@
       })[0] || null;
   }
 
+  function getBestVisibleElement(elements) {
+    const uniqueElements = Array.from(new Set((elements || []).filter(Boolean)));
+    const visibleElements = uniqueElements
+      .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+      .filter(({ element, rect }) => isElementRenderable(element, rect))
+      .sort((first, second) => getVisibleArea(second.rect) - getVisibleArea(first.rect));
+
+    return visibleElements[0]?.element || uniqueElements[0] || null;
+  }
+
   function getYouTubePlayerElement() {
     if (isYouTubeShortsPage()) {
       const activeReel = document.querySelector("ytd-reel-video-renderer[is-active]");
 
-      return activeReel?.querySelector("video")
-        || getVisibleVideo()
-        || activeReel?.querySelector("#movie_player")
-        || activeReel?.querySelector(".html5-video-player")
-        || activeReel
-        || document.querySelector("#shorts-player");
+      return getBestVisibleElement([
+        activeReel?.querySelector("#movie_player"),
+        activeReel?.querySelector(".html5-video-player"),
+        activeReel?.querySelector("video"),
+        activeReel,
+        getVisibleVideo(),
+        document.querySelector("#shorts-player")
+      ]);
     }
 
-    return document.querySelector("ytd-reel-video-renderer[is-active] #movie_player")
-      || document.querySelector("ytd-reel-video-renderer[is-active] .html5-video-player")
-      || document.querySelector("ytd-reel-video-renderer[is-active] #player")
-      || document.querySelector("#shorts-player")
-      || document.querySelector("#movie_player")
-      || document.querySelector(".html5-video-player")
-      || document.querySelector("ytd-player")
-      || document.querySelector("#player");
+    return getBestVisibleElement([
+      document.querySelector("ytd-reel-video-renderer[is-active] #movie_player"),
+      document.querySelector("ytd-reel-video-renderer[is-active] .html5-video-player"),
+      document.querySelector("ytd-reel-video-renderer[is-active] #player"),
+      document.querySelector("#shorts-player"),
+      document.querySelector("#movie_player"),
+      document.querySelector(".html5-video-player"),
+      document.querySelector("ytd-player"),
+      document.querySelector("#player"),
+      document.querySelector(".html5-video-container"),
+      document.querySelector("video"),
+      getVisibleVideo()
+    ]);
   }
 
   function getTikTokPlayerElement() {
-    const video = document.querySelector('[data-e2e="browse-video"] video')
-      || document.querySelector('[data-e2e="feed-video"] video')
-      || document.querySelector('[data-e2e="video-container"] video')
-      || getVisibleVideo();
+    const video = getBestVisibleElement([
+      document.querySelector('[data-e2e="browse-video"] video'),
+      document.querySelector('[data-e2e="feed-video"] video'),
+      document.querySelector('[data-e2e="video-container"] video'),
+      getVisibleVideo()
+    ]);
 
     if (!video) {
       return null;
@@ -1853,12 +1927,17 @@
   }
 
   function ensureStyle() {
-    if (document.getElementById(STYLE_ID)) {
+    const existingStyle = document.getElementById(STYLE_ID);
+
+    if (existingStyle?.dataset.dlpStyleVersion === STYLE_VERSION) {
       return;
     }
 
+    existingStyle?.remove();
+
     const style = document.createElement("style");
     style.id = STYLE_ID;
+    style.dataset.dlpStyleVersion = STYLE_VERSION;
     style.textContent = `
       #${BUTTON_ID},
       #${STREAM_PANEL_ID},
@@ -1877,58 +1956,122 @@
       }
 
       #${BUTTON_ID} {
-        position: absolute;
-        top: 12px;
-        right: 12px;
-        z-index: 2147483647;
-        width: 58px;
-        height: 24px;
-        padding: 0;
-        border: 1px solid color-mix(in srgb, var(--dlp-text-primary) 34%, transparent);
-        border-radius: 6px;
-        background: color-mix(in srgb, var(--dlp-surface) 30%, transparent);
-        color: var(--dlp-text-primary);
-        font: 700 11px/22px Arial, sans-serif;
-        text-align: center;
-        cursor: pointer;
-        text-shadow: 0 1px 2px color-mix(in srgb, var(--dlp-media) 75%, transparent);
+        /* Keep the hit target, but let the page remain visible through it. */
+        all: initial;
+        position: fixed !important;
+        z-index: 2147483647 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        gap: 0 !important;
+        width: 30px !important;
+        min-width: 30px !important;
+        max-width: 30px !important;
+        height: 30px !important;
+        padding: 7px !important;
+        border: 0 !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        color: #fff !important;
+        direction: ltr !important;
+        font: 650 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+        letter-spacing: 0 !important;
+        text-align: center !important;
+        text-decoration: none !important;
+        text-indent: 0 !important;
+        text-shadow: none !important;
+        white-space: nowrap !important;
+        cursor: pointer !important;
         opacity: 0.72;
-        transition: background 160ms ease, border-color 160ms ease, opacity 160ms ease, transform 160ms ease;
+        box-shadow: none !important;
+        transition: opacity 160ms ease, transform 160ms ease;
         user-select: none;
+        -webkit-user-select: none;
+        isolation: auto;
+        overflow: visible;
+      }
+
+      #${BUTTON_ID},
+      #${BUTTON_ID} * {
+        box-sizing: border-box !important;
+      }
+
+      #${BUTTON_ID} .dlp-button-icon {
+        display: inline-flex !important;
+        flex: 0 0 auto !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 16px !important;
+        height: 16px !important;
+        color: #fff !important;
+        /* The icon adapts to the pixels behind it instead of adding a fixed accent. */
+        mix-blend-mode: difference;
+      }
+
+      #${BUTTON_ID} .dlp-button-icon svg {
+        display: block !important;
+        width: 16px !important;
+        height: 16px !important;
+        fill: none !important;
+        stroke: currentColor !important;
+        stroke-linecap: round !important;
+        stroke-linejoin: round !important;
+        stroke-width: 1.8 !important;
+      }
+
+      #${BUTTON_ID} .dlp-button-label {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        clip-path: inset(50%) !important;
+        white-space: nowrap !important;
       }
 
       #${BUTTON_ID}:hover {
-        background: color-mix(in srgb, var(--dlp-text-primary) 16%, transparent);
-        border-color: color-mix(in srgb, var(--dlp-text-primary) 58%, transparent);
-        opacity: 0.95;
-        transform: translateY(-1px);
+        opacity: 1;
+        transform: scale(1.08);
+      }
+
+      #${BUTTON_ID}:focus-visible {
+        outline: 2px solid var(--dlp-accent-interactive) !important;
+        outline-offset: 3px !important;
       }
 
       #${BUTTON_ID}:disabled {
-        cursor: default;
-        opacity: 0.62;
+        cursor: default !important;
+        opacity: 0.48;
         transform: none;
       }
 
       #${BUTTON_ID}[data-dlp-status="sending"] {
-        background: color-mix(in srgb, var(--dlp-accent-interactive) 24%, transparent);
-        border-color: color-mix(in srgb, var(--dlp-accent-interactive) 70%, transparent);
+        opacity: 0.86;
+      }
+
+      #${BUTTON_ID}[data-dlp-status="sending"] .dlp-button-icon svg {
+        animation: dlp-download-pulse 900ms ease-in-out infinite;
       }
 
       #${BUTTON_ID}[data-dlp-status="success"] {
-        background: color-mix(in srgb, var(--dlp-success) 22%, var(--dlp-surface));
-        border-color: color-mix(in srgb, var(--dlp-success) 78%, transparent);
+        opacity: 1;
       }
 
       #${BUTTON_ID}[data-dlp-status="error"] {
-        background: color-mix(in srgb, var(--dlp-error) 18%, var(--dlp-surface));
-        border-color: color-mix(in srgb, var(--dlp-error) 78%, transparent);
+        opacity: 0.86;
       }
 
       #${BUTTON_ID}.dlp-overlay-hidden {
         opacity: 0;
         pointer-events: none;
         transform: translateY(-4px);
+      }
+
+      @keyframes dlp-download-pulse {
+        0%, 100% { opacity: 0.55; transform: translateY(0); }
+        50% { opacity: 1; transform: translateY(2px); }
       }
 
       #${STREAM_PANEL_ID} {
@@ -2185,9 +2328,12 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
+        #${BUTTON_ID},
+        #${BUTTON_ID} .dlp-button-icon svg,
         #${STREAM_PANEL_ID},
         #${STREAM_PANEL_ID} button {
           transition: none;
+          animation: none;
         }
       }
 
@@ -2227,16 +2373,24 @@
   }
 
   function setButtonText(button, text) {
+    const label = button?.querySelector(".dlp-button-label");
+
+    if (label) {
+      label.textContent = text;
+      return;
+    }
+
     button.textContent = text;
   }
 
   function setButtonStatus(button, status, text) {
     button.dataset.dlpStatus = status;
+    button.setAttribute("aria-busy", status === "sending" ? "true" : "false");
     setButtonText(button, text);
   }
 
   function resetButtonStatus(button) {
-    setButtonStatus(button, "idle", settings.streamOverlay ? "STR" : "DLP");
+    setButtonStatus(button, "idle", settings.streamOverlay ? "Streams" : "Download");
     button.disabled = false;
     syncAutoHideAfterPlacement(button);
   }
@@ -2247,6 +2401,8 @@
     if (!toast) {
       toast = document.createElement("div");
       toast.id = TOAST_ID;
+      toast.setAttribute("role", "status");
+      toast.setAttribute("aria-live", "polite");
       document.body.appendChild(toast);
     }
 
@@ -2270,10 +2426,11 @@
 
   function shouldAutoHideButton(button) {
     return Boolean(
-      settings.autoHideOverlay
+        settings.autoHideOverlay
         && button
         && !button.disabled
         && !button.matches(":hover")
+        && !button.matches(":focus")
         && !document.getElementById(STREAM_PANEL_ID)
     );
   }
@@ -2361,7 +2518,7 @@
       ? getInstagramMediaUrl(targetVideo)
       : null;
 
-    setButtonStatus(button, "sending", "...");
+    setButtonStatus(button, "sending", "Sending");
     button.disabled = true;
     button.classList.remove("dlp-overlay-hidden");
     showToast("Sending to DLP", "success");
@@ -2391,15 +2548,15 @@
             }
 
             if (chrome.runtime.lastError) {
-              setButtonStatus(button, "error", "ERR");
+              setButtonStatus(button, "error", "Retry");
               showToast("DLP app connection failed", "error");
               console.log("DLP extension error:", chrome.runtime.lastError.message);
             } else if (!response || response.ok === false) {
-              setButtonStatus(button, "error", "ERR");
+              setButtonStatus(button, "error", "Retry");
               showToast(response?.message || "DLP request failed", "error");
               console.log("DLP native host response:", response);
             } else {
-              setButtonStatus(button, "success", "OK");
+              setButtonStatus(button, "success", "Sent");
               showToast("Sent to DLP", "success");
             }
 
@@ -2694,6 +2851,7 @@
     window.setTimeout(() => {
       if (panel.classList.contains("dlp-stream-panel-hidden")) {
         panel.remove();
+        button?.setAttribute("aria-expanded", "false");
         scheduleAutoHide(button);
       }
     }, 170);
@@ -2727,14 +2885,22 @@
 
   function placeStreamPanel(panel, button) {
     const rect = button.getBoundingClientRect();
-    const width = Math.min(560, window.innerWidth - 20);
-    const maxHeight = Math.min(340, window.innerHeight - 40);
-    const left = clamp(rect.left, 12, Math.max(12, window.innerWidth - width - 12));
-    let top = rect.bottom + 8;
+    const viewport = getViewportSize();
+    const width = Math.min(560, Math.max(1, viewport.width - (VIEWPORT_MARGIN * 2)));
+    const maxHeight = Math.min(340, Math.max(1, viewport.height - (VIEWPORT_MARGIN * 2)));
 
-    if (top + maxHeight > window.innerHeight - 12) {
-      top = Math.max(12, rect.top - maxHeight - 8);
-    }
+    panel.style.width = `${width}px`;
+    panel.style.maxHeight = `${maxHeight}px`;
+
+    const panelRect = panel.getBoundingClientRect();
+    const panelHeight = Math.min(panelRect.height || maxHeight, maxHeight);
+    const maxLeft = Math.max(VIEWPORT_MARGIN, viewport.width - width - VIEWPORT_MARGIN);
+    const left = clamp(rect.left, VIEWPORT_MARGIN, maxLeft);
+    const belowTop = rect.bottom + BUTTON_GAP;
+    const aboveTop = rect.top - panelHeight - BUTTON_GAP;
+    const top = belowTop + panelHeight <= viewport.height - VIEWPORT_MARGIN
+      ? belowTop
+      : clamp(aboveTop, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, viewport.height - panelHeight - VIEWPORT_MARGIN));
 
     panel.style.left = `${left}px`;
     panel.style.top = `${top}px`;
@@ -2888,11 +3054,15 @@
 
     if (existing) {
       existing.remove();
+      button.setAttribute("aria-expanded", "false");
       return;
     }
 
     const panel = document.createElement("div");
     panel.id = STREAM_PANEL_ID;
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "Detected media streams");
+    button.setAttribute("aria-expanded", "true");
     panel.addEventListener("mousedown", (event) => event.stopPropagation());
     panel.addEventListener("click", (event) => event.stopPropagation());
     panel.addEventListener("mouseenter", clearStreamPanelAutoHide);
@@ -2945,6 +3115,7 @@
       event.preventDefault();
       event.stopPropagation();
       removeStreamPanel();
+      button.setAttribute("aria-expanded", "false");
       scheduleAutoHide(button);
     });
 
@@ -2956,19 +3127,45 @@
     refreshStreamPanel(panel, button);
   }
 
+  function setButtonMarkup(button) {
+    button.innerHTML = `
+      <span class="dlp-button-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M12 3v12"></path>
+          <path d="m7.5 10.5 4.5 4.5 4.5-4.5"></path>
+          <path d="M5 20h14"></path>
+        </svg>
+      </span>
+      <span class="dlp-button-label"></span>
+    `;
+  }
+
   function createButton() {
     const button = document.createElement("button");
     button.id = BUTTON_ID;
     button.type = "button";
-    button.title = settings.streamOverlay ? "Show stream links" : "Download with DLP";
-    button.setAttribute("aria-label", settings.streamOverlay ? "Show stream links" : "Download with DLP");
-    setButtonStatus(button, "idle", settings.streamOverlay ? "STR" : "DLP");
+    setButtonMarkup(button);
+    button.title = settings.streamOverlay ? "Show stream links" : "Download this video with DLP";
+    button.setAttribute("aria-label", settings.streamOverlay ? "Show stream links" : "Download this video with DLP");
+    if (settings.streamOverlay) {
+      button.setAttribute("aria-haspopup", "dialog");
+      button.setAttribute("aria-expanded", "false");
+    }
+    setButtonStatus(button, "idle", settings.streamOverlay ? "Streams" : "Download");
 
     button.addEventListener("mouseenter", () => {
       showButtonForInteraction(button);
     });
 
     button.addEventListener("mouseleave", () => {
+      scheduleAutoHide(button);
+    });
+
+    button.addEventListener("focus", () => {
+      showButtonForInteraction(button);
+    });
+
+    button.addEventListener("blur", () => {
       scheduleAutoHide(button);
     });
 
@@ -2992,6 +3189,23 @@
     return button;
   }
 
+  function observeTargetSize(target) {
+    if (observedTarget === target || !window.ResizeObserver) {
+      return;
+    }
+
+    targetResizeObserver?.disconnect();
+    targetResizeObserver = new ResizeObserver(() => scheduleRefresh());
+    observedTarget = target;
+    targetResizeObserver.observe(target);
+  }
+
+  function clearTargetSizeObservation() {
+    targetResizeObserver?.disconnect();
+    targetResizeObserver = null;
+    observedTarget = null;
+  }
+
   function removeButton() {
     const existing = document.getElementById(BUTTON_ID);
 
@@ -3000,29 +3214,12 @@
     }
 
     removeStreamPanel();
-  }
-
-  function isFixedOverlayPlatform(platform) {
-    return (platform === "youtube" && isYouTubeShortsPage())
-      || platform === "tiktok"
-      || platform === "instagram"
-      || platform === "x"
-      || platform === "soundcloud";
+    clearTargetSizeObservation();
   }
 
   function getOverlayPosition() {
     const value = settings.overlayPosition || DEFAULT_SETTINGS.overlayPosition;
-    const allowedPositions = new Set([
-      "auto",
-      "top-right",
-      "top-center",
-      "top-left",
-      "bottom-right",
-      "bottom-center",
-      "bottom-left"
-    ]);
-
-    return allowedPositions.has(value) ? value : DEFAULT_SETTINGS.overlayPosition;
+    return OVERLAY_POSITIONS.has(value) ? value : DEFAULT_SETTINGS.overlayPosition;
   }
 
   function isRectVisible(rect) {
@@ -3032,6 +3229,18 @@
       && rect.right > 0
       && rect.top < window.innerHeight
       && rect.left < window.innerWidth;
+  }
+
+  function isElementRenderable(element, rect = element.getBoundingClientRect()) {
+    if (!isRectVisible(rect)) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(element);
+    return style.display !== "none"
+      && style.visibility !== "hidden"
+      && style.opacity !== "0"
+      && !element.closest("[hidden], [aria-hidden=\"true\"]");
   }
 
   function getVisibleArea(rect) {
@@ -3045,123 +3254,103 @@
     return Math.min(Math.max(value, min), max);
   }
 
-  function placeButtonAtPosition(button, target, position) {
-    const rect = target.getBoundingClientRect();
-
-    if (!isRectVisible(rect)) {
-      button.style.display = "none";
-      return;
-    }
-
-    let top = rect.top + BUTTON_OFFSET;
-    let left = rect.right - BUTTON_WIDTH - BUTTON_OFFSET;
-
-    if (position.startsWith("bottom")) {
-      top = rect.bottom - BUTTON_HEIGHT - BUTTON_OFFSET;
-    }
-
-    if (position.endsWith("left")) {
-      left = rect.left + BUTTON_OFFSET;
-    } else if (position.endsWith("center")) {
-      left = rect.left + (rect.width / 2) - (BUTTON_WIDTH / 2);
-    }
-
-    button.style.display = "";
-    button.style.position = "fixed";
-    button.style.top = `${clamp(top, BUTTON_OFFSET, window.innerHeight - BUTTON_HEIGHT - BUTTON_OFFSET)}px`;
-    button.style.left = `${clamp(left, BUTTON_OFFSET, window.innerWidth - BUTTON_WIDTH - BUTTON_OFFSET)}px`;
-    button.style.right = "auto";
-    button.style.bottom = "auto";
-    syncAutoHideAfterPlacement(button);
+  function getViewportSize() {
+    return {
+      width: Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1),
+      height: Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1)
+    };
   }
 
-  function placeFixedButton(button, target) {
+  function getButtonSize(button, viewport) {
+    const availableWidth = Math.max(1, viewport.width - (VIEWPORT_MARGIN * 2));
+    const availableHeight = Math.max(1, viewport.height - (VIEWPORT_MARGIN * 2));
+    const width = Math.max(1, Math.min(button.offsetWidth || BUTTON_WIDTH, availableWidth));
+    const height = Math.max(1, Math.min(button.offsetHeight || BUTTON_HEIGHT, availableHeight));
+
+    return { width, height };
+  }
+
+  function isPlacementCovered(left, top, size, target, button) {
+    const samplePoints = [
+      [left + (size.width / 2), top + (size.height / 2)],
+      [left + 4, top + (size.height / 2)],
+      [left + size.width - 4, top + (size.height / 2)]
+    ];
+
+    return samplePoints.some(([x, y]) => {
+      const element = document.elementFromPoint(x, y);
+
+      if (!element || element === button || button.contains(element) || element === target || target.contains(element)) {
+        return false;
+      }
+
+      const style = window.getComputedStyle(element);
+      return ["fixed", "sticky"].includes(style.position)
+        && style.pointerEvents !== "none"
+        && style.visibility !== "hidden"
+        && style.display !== "none";
+    });
+  }
+
+  function placeButtonRelativeToMedia(button, target, position) {
     const rect = target.getBoundingClientRect();
+    const viewport = getViewportSize();
 
     if (!isRectVisible(rect)) {
       button.style.display = "none";
       return;
     }
 
-    const top = Math.max(rect.top + BUTTON_OFFSET, BUTTON_OFFSET);
-    const left = Math.min(
-      Math.max(rect.right - BUTTON_WIDTH - BUTTON_OFFSET, BUTTON_OFFSET),
-      window.innerWidth - BUTTON_WIDTH - BUTTON_OFFSET
+    button.style.display = "inline-flex";
+    button.style.position = "fixed";
+    button.style.right = "auto";
+    button.style.bottom = "auto";
+    button.style.top = "0px";
+    button.style.left = "0px";
+    const size = getButtonSize(button, viewport);
+    const maxLeft = Math.max(VIEWPORT_MARGIN, viewport.width - size.width - VIEWPORT_MARGIN);
+    const maxTop = Math.max(VIEWPORT_MARGIN, viewport.height - size.height - VIEWPORT_MARGIN);
+    const alignRight = !position.endsWith("left") && !position.endsWith("center");
+    const alignCenter = position.endsWith("center");
+    const preferredLeft = alignRight
+      ? rect.right - size.width
+      : alignCenter
+        ? rect.left + ((rect.width - size.width) / 2)
+        : rect.left;
+    const left = clamp(preferredLeft, VIEWPORT_MARGIN, maxLeft);
+    const aboveTop = rect.top - BUTTON_GAP - size.height;
+    const belowTop = rect.bottom + BUTTON_GAP;
+    const canPlaceAbove = aboveTop >= VIEWPORT_MARGIN
+      && !isPlacementCovered(left, aboveTop, size, target, button);
+    const canPlaceBelow = belowTop + size.height <= viewport.height - VIEWPORT_MARGIN
+      && !isPlacementCovered(left, belowTop, size, target, button);
+    const prefersBelow = position.startsWith("bottom");
+    const isFullscreen = Boolean(
+      document.fullscreenElement
+        && (document.fullscreenElement === target || document.fullscreenElement.contains(target))
     );
 
-    button.style.display = "";
-    button.style.position = "fixed";
-    button.style.top = `${top}px`;
+    let placement = "above";
+
+    if (isFullscreen) {
+      placement = "inside";
+    } else if (prefersBelow) {
+      placement = canPlaceBelow ? "below" : canPlaceAbove ? "above" : "inside";
+    } else {
+      placement = canPlaceAbove ? "above" : canPlaceBelow ? "below" : "inside";
+    }
+
+    let top = aboveTop;
+
+    if (placement === "below") {
+      top = belowTop;
+    } else if (placement === "inside") {
+      top = rect.top + BUTTON_GAP;
+    }
+
+    button.dataset.dlpPlacement = placement;
+    button.style.top = `${clamp(top, VIEWPORT_MARGIN, maxTop)}px`;
     button.style.left = `${left}px`;
-    button.style.right = "auto";
-    button.style.bottom = "auto";
-    syncAutoHideAfterPlacement(button);
-  }
-
-  function placeTopCenterButton(button, target) {
-    const rect = target.getBoundingClientRect();
-
-    if (!isRectVisible(rect)) {
-      button.style.display = "none";
-      return;
-    }
-
-    const top = Math.max(rect.top + BUTTON_OFFSET, BUTTON_OFFSET);
-    const left = Math.min(
-      Math.max(rect.left + (rect.width / 2) - (BUTTON_WIDTH / 2), BUTTON_OFFSET),
-      window.innerWidth - BUTTON_WIDTH - BUTTON_OFFSET
-    );
-
-    button.style.display = "";
-    button.style.position = "fixed";
-    button.style.top = `${top}px`;
-    button.style.left = `${left}px`;
-    button.style.right = "auto";
-    button.style.bottom = "auto";
-    syncAutoHideAfterPlacement(button);
-  }
-
-  function placeSoundCloudButton(button, target) {
-    const rect = target.getBoundingClientRect();
-
-    button.style.display = "";
-    button.style.position = "fixed";
-    button.style.left = "auto";
-
-    if (isRectVisible(rect)) {
-      const top = Math.max(rect.top - 36, BUTTON_OFFSET);
-      const right = Math.max(window.innerWidth - rect.right + BUTTON_OFFSET, BUTTON_OFFSET);
-
-      button.style.top = `${top}px`;
-      button.style.right = `${right}px`;
-      button.style.bottom = "auto";
-      syncAutoHideAfterPlacement(button);
-      return;
-    }
-
-    button.style.top = "auto";
-    button.style.right = "18px";
-    button.style.bottom = "74px";
-    syncAutoHideAfterPlacement(button);
-  }
-
-  function placeAnchoredButton(button, player) {
-    const computedPosition = window.getComputedStyle(player).position;
-
-    if (computedPosition === "static") {
-      player.style.position = "relative";
-    }
-
-    button.style.display = "";
-    button.style.position = "";
-    button.style.top = "";
-    button.style.left = "";
-    button.style.right = "";
-
-    if (button.parentElement !== player) {
-      player.appendChild(button);
-    }
-
     syncAutoHideAfterPlacement(button);
   }
 
@@ -3191,9 +3380,14 @@
       return;
     }
 
+    observeTargetSize(player);
+
     let button = document.getElementById(BUTTON_ID);
 
     if (!button) {
+      button = createButton();
+    } else if (!button.querySelector(".dlp-button-icon")) {
+      button.remove();
       button = createButton();
     }
 
@@ -3202,44 +3396,27 @@
       ? player
       : null;
 
-    button.title = settings.streamOverlay ? "Show stream links" : "Download with DLP";
-    button.setAttribute("aria-label", settings.streamOverlay ? "Show stream links" : "Download with DLP");
+    button.title = settings.streamOverlay ? "Show stream links" : "Download this video with DLP";
+    button.setAttribute("aria-label", settings.streamOverlay ? "Show stream links" : "Download this video with DLP");
+    if (settings.streamOverlay) {
+      button.setAttribute("aria-haspopup", "dialog");
+      button.setAttribute("aria-expanded", String(Boolean(document.getElementById(STREAM_PANEL_ID))));
+    } else {
+      button.removeAttribute("aria-haspopup");
+      button.removeAttribute("aria-expanded");
+    }
 
     if (button.dataset.dlpStatus === "idle") {
-      setButtonText(button, settings.streamOverlay ? "STR" : "DLP");
+      setButtonText(button, settings.streamOverlay ? "Streams" : "Download");
     }
 
     const overlayPosition = getOverlayPosition();
 
-    if (overlayPosition !== "auto") {
-      if (button.parentElement !== document.body) {
-        document.body.appendChild(button);
-      }
-
-      placeButtonAtPosition(button, player, overlayPosition);
-      return;
+    if (button.parentElement !== document.body) {
+      document.body.appendChild(button);
     }
 
-    if (isFixedOverlayPlatform(platform)) {
-      if (button.parentElement !== document.body) {
-        document.body.appendChild(button);
-      }
-
-      if (platform === "tiktok" || (platform === "youtube" && isYouTubeShortsPage())) {
-        placeTopCenterButton(button, player);
-        return;
-      }
-
-      if (platform === "soundcloud") {
-        placeSoundCloudButton(button, player);
-        return;
-      }
-
-      placeFixedButton(button, player);
-      return;
-    }
-
-    placeAnchoredButton(button, player);
+    placeButtonRelativeToMedia(button, player, overlayPosition);
   }
 
   function scheduleRefresh() {
@@ -3284,7 +3461,13 @@
     window.addEventListener("popstate", notify);
     window.addEventListener("resize", scheduleRefresh);
     window.addEventListener("scroll", scheduleRefresh, true);
+    document.addEventListener("fullscreenchange", scheduleRefresh, true);
     document.addEventListener("yt-navigate-finish", scheduleRefresh);
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", scheduleRefresh);
+      window.visualViewport.addEventListener("scroll", scheduleRefresh);
+    }
   }
 
   function watchExtensionMessages() {

@@ -49,6 +49,9 @@ const SUPPORTED_DOCUMENT_URL_PATTERNS = [
   "*://youtube.com/*",
   "*://www.youtube.com/*",
   "*://m.youtube.com/*",
+  "*://music.youtube.com/*",
+  "*://youtube-nocookie.com/*",
+  "*://www.youtube-nocookie.com/*",
   "*://youtu.be/*",
   "*://tiktok.com/*",
   "*://www.tiktok.com/*",
@@ -611,6 +614,9 @@ function isSupportedPageUrl(url) {
     "youtube.com",
     "www.youtube.com",
     "m.youtube.com",
+    "music.youtube.com",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
     "youtu.be",
     "tiktok.com",
     "www.tiktok.com",
@@ -732,11 +738,20 @@ function isSupportedMediaPageUrl(url) {
     return MEDIA_URL_RE.test(parsed.href) || STREAM_URL_RE.test(parsed.href) || MEDIA_QUERY_RE.test(parsed.href);
   }
 
-  if (["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)) {
-    return path === "/watch" && parsed.searchParams.has("v")
+  if ([
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com"
+  ].includes(host)) {
+    return (path === "/watch" && parsed.searchParams.has("v"))
       || path.startsWith("/shorts/")
       || path.startsWith("/live/")
-      || path.startsWith("/clip/");
+      || path.startsWith("/clip/")
+      || path.startsWith("/embed/")
+      || path.startsWith("/v/");
   }
 
   if (host === "youtu.be") {
