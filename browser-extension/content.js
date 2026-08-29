@@ -1,11 +1,13 @@
 (function () {
   const BUTTON_ID = "dlp-video-download-button";
+  const ROTATE_BUTTON_ID = "dlp-video-rotate-button";
   const STREAM_PANEL_ID = "dlp-video-stream-panel";
   const STYLE_ID = "dlp-video-download-style";
-  const STYLE_VERSION = "3";
+  const STYLE_VERSION = "4";
   const TOAST_ID = "dlp-video-download-toast";
   const BUTTON_WIDTH = 30;
   const BUTTON_HEIGHT = 30;
+  const ACTION_GAP = 2;
   const BUTTON_INSET = 4;
   const BUTTON_GAP = 3;
   const VIEWPORT_MARGIN = 8;
@@ -67,6 +69,8 @@
   let streamPanelHideTimer = null;
   let toastTimer = null;
   let lastActivityAt = 0;
+  let lastPointerX = -1;
+  let lastPointerY = -1;
   let extensionActive = true;
   let observer = null;
   let targetResizeObserver = null;
@@ -79,6 +83,7 @@
   let tikTokItemsCacheAt = 0;
   let lastInstagramMediaContext = "";
   let instagramCandidatesStartedAt = Date.now();
+  const videoRotationStates = new WeakMap();
 
   function normalizeSettings(storedSettings) {
     const values = {
@@ -1967,6 +1972,7 @@
     style.dataset.dlpStyleVersion = STYLE_VERSION;
     style.textContent = `
       #${BUTTON_ID},
+      #${ROTATE_BUTTON_ID},
       #${STREAM_PANEL_ID},
       #${TOAST_ID} {
         --dlp-bg: #0d1117;
@@ -1982,7 +1988,8 @@
         --dlp-media: #000000;
       }
 
-      #${BUTTON_ID} {
+      #${BUTTON_ID},
+      #${ROTATE_BUTTON_ID} {
         /* Keep the hit target, but let the page remain visible through it. */
         all: initial;
         position: fixed !important;
@@ -2019,15 +2026,19 @@
       }
 
       #${BUTTON_ID},
-      #${BUTTON_ID} * {
+      #${BUTTON_ID} *,
+      #${ROTATE_BUTTON_ID},
+      #${ROTATE_BUTTON_ID} * {
         box-sizing: border-box !important;
       }
 
-      #${BUTTON_ID}[hidden] {
+      #${BUTTON_ID}[hidden],
+      #${ROTATE_BUTTON_ID}[hidden] {
         display: none !important;
       }
 
-      #${BUTTON_ID} .dlp-button-icon {
+      #${BUTTON_ID} .dlp-button-icon,
+      #${ROTATE_BUTTON_ID} .dlp-button-icon {
         display: inline-flex !important;
         flex: 0 0 auto !important;
         align-items: center !important;
@@ -2039,7 +2050,8 @@
         mix-blend-mode: difference;
       }
 
-      #${BUTTON_ID} .dlp-button-icon svg {
+      #${BUTTON_ID} .dlp-button-icon svg,
+      #${ROTATE_BUTTON_ID} .dlp-button-icon svg {
         display: block !important;
         width: 16px !important;
         height: 16px !important;
@@ -2062,17 +2074,20 @@
         white-space: nowrap !important;
       }
 
-      #${BUTTON_ID}:hover {
+      #${BUTTON_ID}:hover,
+      #${ROTATE_BUTTON_ID}:hover {
         opacity: 1;
         transform: scale(1.08);
       }
 
-      #${BUTTON_ID}:focus-visible {
+      #${BUTTON_ID}:focus-visible,
+      #${ROTATE_BUTTON_ID}:focus-visible {
         outline: 2px solid var(--dlp-accent-interactive) !important;
         outline-offset: 3px !important;
       }
 
-      #${BUTTON_ID}:disabled {
+      #${BUTTON_ID}:disabled,
+      #${ROTATE_BUTTON_ID}:disabled {
         cursor: default !important;
         opacity: 0.48;
         transform: none;
@@ -2094,7 +2109,12 @@
         opacity: 0.86;
       }
 
-      #${BUTTON_ID}.dlp-overlay-hidden {
+      #${ROTATE_BUTTON_ID}[data-dlp-rotation]:not([data-dlp-rotation="0"]) {
+        opacity: 1;
+      }
+
+      #${BUTTON_ID}.dlp-overlay-hidden,
+      #${ROTATE_BUTTON_ID}.dlp-overlay-hidden {
         opacity: 0;
         pointer-events: none;
         transform: translateY(-4px);
@@ -2361,6 +2381,8 @@
       @media (prefers-reduced-motion: reduce) {
         #${BUTTON_ID},
         #${BUTTON_ID} .dlp-button-icon svg,
+        #${ROTATE_BUTTON_ID},
+        #${ROTATE_BUTTON_ID} .dlp-button-icon svg,
         #${STREAM_PANEL_ID},
         #${STREAM_PANEL_ID} button {
           transition: none;
@@ -2456,12 +2478,16 @@
   }
 
   function shouldAutoHideButton(button) {
+    const rotateButton = document.getElementById(ROTATE_BUTTON_ID);
+
     return Boolean(
         settings.autoHideOverlay
         && button
         && !button.disabled
         && !button.matches(":hover")
         && !button.matches(":focus")
+        && !rotateButton?.matches(":hover")
+        && !rotateButton?.matches(":focus")
         && !document.getElementById(STREAM_PANEL_ID)
     );
   }
@@ -2471,16 +2497,19 @@
 
     if (!shouldAutoHideButton(button)) {
       button?.classList.remove("dlp-overlay-hidden");
+      document.getElementById(ROTATE_BUTTON_ID)?.classList.remove("dlp-overlay-hidden");
       return;
     }
 
     hideTimer = window.setTimeout(() => {
       if (!shouldAutoHideButton(button)) {
         button?.classList.remove("dlp-overlay-hidden");
+        document.getElementById(ROTATE_BUTTON_ID)?.classList.remove("dlp-overlay-hidden");
         return;
       }
 
       button.classList.add("dlp-overlay-hidden");
+      document.getElementById(ROTATE_BUTTON_ID)?.classList.add("dlp-overlay-hidden");
     }, AUTO_HIDE_DELAY_MS);
   }
 
@@ -2492,6 +2521,7 @@
     }
 
     targetButton.classList.remove("dlp-overlay-hidden");
+    document.getElementById(ROTATE_BUTTON_ID)?.classList.remove("dlp-overlay-hidden");
     scheduleAutoHide(targetButton);
   }
 
@@ -2505,6 +2535,7 @@
     if (!settings.autoHideOverlay) {
       window.clearTimeout(hideTimer);
       button.classList.remove("dlp-overlay-hidden");
+      document.getElementById(ROTATE_BUTTON_ID)?.classList.remove("dlp-overlay-hidden");
       return;
     }
 
@@ -2524,12 +2555,198 @@
     showButtonForInteraction();
   }
 
+  function handlePointerActivity(event) {
+    const point = event.touches?.[0] || event;
+
+    if (Number.isFinite(point.clientX) && Number.isFinite(point.clientY)) {
+      lastPointerX = point.clientX;
+      lastPointerY = point.clientY;
+    }
+
+    handlePageActivity();
+  }
+
   function getButtonTargetVideo(button) {
     const targetVideo = button?.__dlpTargetVideo;
 
     return targetVideo instanceof HTMLVideoElement && document.contains(targetVideo)
       ? targetVideo
       : null;
+  }
+
+  function captureStyleProperty(element, name) {
+    return {
+      value: element.style.getPropertyValue(name),
+      priority: element.style.getPropertyPriority(name)
+    };
+  }
+
+  function restoreStyleProperty(element, name, property) {
+    if (property.value) {
+      element.style.setProperty(name, property.value, property.priority);
+    } else {
+      element.style.removeProperty(name);
+    }
+  }
+
+  function getVideoRotationSource(video) {
+    return video.currentSrc
+      || video.src
+      || video.querySelector("source[src]")?.src
+      || location.href;
+  }
+
+  function restoreVideoRotationStyles(video, state) {
+    restoreStyleProperty(video, "rotate", state.original.rotate);
+    restoreStyleProperty(video, "scale", state.original.scale);
+    restoreStyleProperty(video, "transform-origin", state.original.transformOrigin);
+    video.removeAttribute("data-dlp-rotation");
+  }
+
+  function getVideoRotationState(video) {
+    const source = getVideoRotationSource(video);
+    let state = videoRotationStates.get(video);
+
+    if (state && state.source !== source) {
+      restoreVideoRotationStyles(video, state);
+      state = null;
+    }
+
+    if (!state) {
+      state = {
+        degrees: 0,
+        frame: null,
+        source,
+        original: {
+          rotate: captureStyleProperty(video, "rotate"),
+          scale: captureStyleProperty(video, "scale"),
+          transformOrigin: captureStyleProperty(video, "transform-origin")
+        }
+      };
+      videoRotationStates.set(video, state);
+    }
+
+    return state;
+  }
+
+  function getVideoRotationScale(video, degrees) {
+    if (degrees % 180 === 0) {
+      return 1;
+    }
+
+    const width = video.clientWidth || video.offsetWidth || video.videoWidth || 1;
+    const height = video.clientHeight || video.offsetHeight || video.videoHeight || 1;
+    return Math.min(1, width / height, height / width);
+  }
+
+  function syncRotateButton(button, video) {
+    if (!button) {
+      return;
+    }
+
+    button.__dlpTargetVideo = video instanceof HTMLVideoElement ? video : null;
+
+    if (!(video instanceof HTMLVideoElement)) {
+      button.hidden = true;
+      button.dataset.dlpRotation = "0";
+      return;
+    }
+
+    const degrees = getVideoRotationState(video).degrees;
+    button.hidden = false;
+    button.dataset.dlpRotation = String(degrees);
+    button.title = degrees
+      ? `Rotation: ${degrees}° · Click: 90° right · Shift+click: 90° left · Double-click: reset`
+      : "Rotate 90° right · Shift+click: 90° left · Double-click: reset · [ ] \\";
+    button.setAttribute("aria-label", degrees
+      ? `Video rotation ${degrees} degrees. Click to rotate right, Shift click to rotate left, double click to reset`
+      : "Rotate video right. Shift click rotates left. Double click resets");
+  }
+
+  function setVideoRotation(video, degrees) {
+    if (!(video instanceof HTMLVideoElement)) {
+      return;
+    }
+
+    const state = getVideoRotationState(video);
+    const normalized = ((degrees % 360) + 360) % 360;
+    state.degrees = normalized;
+
+    if (normalized === 0) {
+      restoreVideoRotationStyles(video, state);
+    } else {
+      const scale = getVideoRotationScale(video, normalized);
+      video.style.setProperty("transform-origin", "center center", "important");
+      video.style.setProperty("rotate", `${normalized}deg`, "important");
+      video.style.setProperty("scale", String(Number(scale.toFixed(4))), "important");
+      video.dataset.dlpRotation = String(normalized);
+    }
+
+    syncRotateButton(document.getElementById(ROTATE_BUTTON_ID), video);
+  }
+
+  function rotateTargetVideo(button, delta) {
+    const video = getButtonTargetVideo(button);
+
+    if (!video) {
+      return;
+    }
+
+    const state = getVideoRotationState(video);
+    setVideoRotation(video, state.degrees + delta);
+  }
+
+  function isEditableTarget(target) {
+    return target instanceof Element && Boolean(target.closest(
+      'input, textarea, select, [contenteditable="true"], [role="textbox"]'
+    ));
+  }
+
+  function isPointerOverVideo(video) {
+    const rect = video.getBoundingClientRect();
+    return lastPointerX >= rect.left
+      && lastPointerX <= rect.right
+      && lastPointerY >= rect.top
+      && lastPointerY <= rect.bottom;
+  }
+
+  function handleRotationShortcut(event) {
+    if (event.defaultPrevented
+        || event.repeat
+        || event.isComposing
+        || event.ctrlKey
+        || event.altKey
+        || event.metaKey
+        || isEditableTarget(event.target)) {
+      return;
+    }
+
+    const action = {
+      BracketLeft: -90,
+      BracketRight: 90,
+      Backslash: 0
+    }[event.code];
+
+    if (action === undefined) {
+      return;
+    }
+
+    const button = document.getElementById(ROTATE_BUTTON_ID);
+    const video = getButtonTargetVideo(button);
+    const buttonFocused = document.activeElement === button;
+
+    if (!video || (!buttonFocused && !isPointerOverVideo(video))) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    if (action === 0) {
+      setVideoRotation(video, 0);
+    } else {
+      rotateTargetVideo(button, action);
+    }
   }
 
   function sendDownload(button) {
@@ -3176,6 +3393,17 @@
     `;
   }
 
+  function setRotateButtonMarkup(button) {
+    button.innerHTML = `
+      <span class="dlp-button-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M20 11a8 8 0 1 1-2.34-5.66"></path>
+          <path d="M20 4v7h-7"></path>
+        </svg>
+      </span>
+    `;
+  }
+
   function createButton() {
     const button = document.createElement("button");
     button.id = BUTTON_ID;
@@ -3225,13 +3453,62 @@
     return button;
   }
 
+  function createRotateButton() {
+    const button = document.createElement("button");
+    button.id = ROTATE_BUTTON_ID;
+    button.type = "button";
+    button.hidden = true;
+    setRotateButtonMarkup(button);
+
+    button.addEventListener("mouseenter", () => {
+      showButtonForInteraction();
+    });
+
+    button.addEventListener("focus", () => {
+      showButtonForInteraction();
+    });
+
+    button.addEventListener("mousedown", (event) => {
+      event.stopPropagation();
+    });
+
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      rotateTargetVideo(button, event.shiftKey ? -90 : 90);
+    });
+
+    button.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const video = getButtonTargetVideo(button);
+
+      if (video) {
+        setVideoRotation(video, 0);
+      }
+    });
+
+    return button;
+  }
+
   function observeTargetSize(target) {
     if (observedTarget === target || !window.ResizeObserver) {
       return;
     }
 
     targetResizeObserver?.disconnect();
-    targetResizeObserver = new ResizeObserver(() => scheduleRefresh());
+    targetResizeObserver = new ResizeObserver(() => {
+      const rotateButton = document.getElementById(ROTATE_BUTTON_ID);
+      const video = getButtonTargetVideo(rotateButton);
+      const state = video && videoRotationStates.get(video);
+
+      if (video && state?.degrees) {
+        setVideoRotation(video, state.degrees);
+      }
+
+      scheduleRefresh();
+    });
     observedTarget = target;
     targetResizeObserver.observe(target);
   }
@@ -3249,10 +3526,13 @@
     }
 
     const existing = document.getElementById(BUTTON_ID);
+    const rotateButton = document.getElementById(ROTATE_BUTTON_ID);
 
     if (existing) {
       existing.remove();
     }
+
+    rotateButton?.remove();
 
     removeStreamPanel();
     clearTargetSizeObservation();
@@ -3321,13 +3601,22 @@
     };
   }
 
-  function getButtonSize(button, viewport) {
+  function getActionSize(button, rotateButton, viewport) {
     const availableWidth = Math.max(1, viewport.width - (VIEWPORT_MARGIN * 2));
     const availableHeight = Math.max(1, viewport.height - (VIEWPORT_MARGIN * 2));
-    const width = Math.max(1, Math.min(button.offsetWidth || BUTTON_WIDTH, availableWidth));
-    const height = Math.max(1, Math.min(button.offsetHeight || BUTTON_HEIGHT, availableHeight));
+    const buttonWidth = button.offsetWidth || BUTTON_WIDTH;
+    const rotateVisible = Boolean(rotateButton && !rotateButton.hidden);
+    const rotateWidth = rotateVisible ? rotateButton.offsetWidth || BUTTON_WIDTH : 0;
+    const width = Math.max(1, Math.min(
+      buttonWidth + (rotateVisible ? ACTION_GAP + rotateWidth : 0),
+      availableWidth
+    ));
+    const height = Math.max(1, Math.min(
+      Math.max(button.offsetHeight || BUTTON_HEIGHT, rotateButton?.offsetHeight || 0),
+      availableHeight
+    ));
 
-    return { width, height };
+    return { width, height, buttonWidth, rotateVisible };
   }
 
   function getVisibleRect(rect, viewport) {
@@ -3346,23 +3635,63 @@
     };
   }
 
-  function getPlacementTarget(player, platform) {
+  function getStableVideoFrame(video) {
+    const state = getVideoRotationState(video);
+
+    if (state.frame && document.documentElement.contains(state.frame)) {
+      return state.frame;
+    }
+
+    const videoRect = video.getBoundingClientRect();
+    let frame = video;
+    let parent = video.parentElement;
+
+    for (let depth = 0; parent && depth < 4; depth += 1, parent = parent.parentElement) {
+      const rect = parent.getBoundingClientRect();
+      const closelyWrapsVideo = rect.width >= videoRect.width - 2
+        && rect.height >= videoRect.height - 2
+        && rect.width <= videoRect.width + 32
+        && rect.height <= videoRect.height + 32;
+
+      if (!closelyWrapsVideo) {
+        break;
+      }
+
+      frame = parent;
+    }
+
+    state.frame = frame;
+    return frame;
+  }
+
+  function getRotationVideo(player) {
     if (player instanceof HTMLVideoElement) {
       return player;
     }
 
-    const shouldUseVideo = platform === "tiktok"
+    if (typeof player?.querySelectorAll === "function") {
+      const video = getBestVisibleElement(Array.from(player.querySelectorAll("video")));
+
+      if (video instanceof HTMLVideoElement && isElementRenderable(video)) {
+        return video;
+      }
+    }
+
+    return getVisibleVideo();
+  }
+
+  function getPlacementTarget(player, platform, rotationVideo) {
+    const shouldUseVideoFrame = platform === "tiktok"
       || platform === "instagram"
       || platform === "x"
       || (platform === "youtube" && isYouTubeShortsPage())
       || !platform;
 
-    if (!shouldUseVideo || typeof player.querySelectorAll !== "function") {
+    if (!shouldUseVideoFrame || !(rotationVideo instanceof HTMLVideoElement)) {
       return player;
     }
 
-    const video = getBestVisibleElement(Array.from(player.querySelectorAll("video")));
-    return video && isElementRenderable(video) ? video : player;
+    return getStableVideoFrame(rotationVideo);
   }
 
   function getOverlayRoot(target) {
@@ -3452,7 +3781,7 @@
     return fitsViewport && fitsMedia ? { name, left, top, inside } : null;
   }
 
-  function isPlacementBlocked(candidate, size, target, button) {
+  function isPlacementBlocked(candidate, size, target, controls) {
     const points = [
       [candidate.left + (size.width / 2), candidate.top + (size.height / 2)],
       [candidate.left + 3, candidate.top + 3],
@@ -3462,7 +3791,8 @@
     return points.some(([x, y]) => {
       const element = document.elementFromPoint(x, y);
 
-      if (!element || element === button || button.contains(element)) {
+      if (!element || controls.some((control) =>
+        control && (element === control || control.contains(element)))) {
         return false;
       }
 
@@ -3481,7 +3811,7 @@
     });
   }
 
-  function placeButtonRelativeToMedia(button, target, position, platform) {
+  function placeButtonRelativeToMedia(button, rotateButton, target, position, platform) {
     const targetRect = target.getBoundingClientRect();
     const viewport = getViewportSize();
     const rect = getVisibleRect(targetRect, viewport);
@@ -3490,23 +3820,30 @@
         || rect.width < MIN_VISIBLE_MEDIA_EDGE
         || rect.height < MIN_VISIBLE_MEDIA_EDGE) {
       button.hidden = true;
+      if (rotateButton) {
+        rotateButton.hidden = true;
+      }
       return;
     }
 
     button.hidden = false;
     button.style.top = `${viewport.top}px`;
     button.style.left = `${viewport.left}px`;
-    const size = getButtonSize(button, viewport);
+    const size = getActionSize(button, rotateButton, viewport);
     const order = document.fullscreenElement
       ? ["inside-top-right", "inside-top-left"]
       : getPlacementOrder(platform, target, position);
     const previousPointerEvents = button.style.getPropertyValue("pointer-events");
     const previousPointerPriority = button.style.getPropertyPriority("pointer-events");
+    const previousRotatePointerEvents = rotateButton?.style.getPropertyValue("pointer-events") || "";
+    const previousRotatePointerPriority = rotateButton?.style.getPropertyPriority("pointer-events") || "";
 
     button.style.setProperty("pointer-events", "none", "important");
+    rotateButton?.style.setProperty("pointer-events", "none", "important");
     const selected = order
       .map((name) => createPlacementCandidate(name, rect, size, viewport))
-      .find((candidate) => candidate && !isPlacementBlocked(candidate, size, target, button));
+      .find((candidate) => candidate
+        && !isPlacementBlocked(candidate, size, target, [button, rotateButton]));
 
     if (previousPointerEvents) {
       button.style.setProperty("pointer-events", previousPointerEvents, previousPointerPriority);
@@ -3514,14 +3851,36 @@
       button.style.removeProperty("pointer-events");
     }
 
+    if (rotateButton) {
+      if (previousRotatePointerEvents) {
+        rotateButton.style.setProperty(
+          "pointer-events",
+          previousRotatePointerEvents,
+          previousRotatePointerPriority
+        );
+      } else {
+        rotateButton.style.removeProperty("pointer-events");
+      }
+    }
+
     if (!selected) {
       button.hidden = true;
+      if (rotateButton) {
+        rotateButton.hidden = true;
+      }
       return;
     }
 
     button.dataset.dlpPlacement = selected.name;
     button.style.top = `${selected.top}px`;
     button.style.left = `${selected.left}px`;
+
+    if (rotateButton && size.rotateVisible) {
+      rotateButton.dataset.dlpPlacement = selected.name;
+      rotateButton.style.top = `${selected.top}px`;
+      rotateButton.style.left = `${selected.left + size.buttonWidth + ACTION_GAP}px`;
+    }
+
     syncAutoHideAfterPlacement(button);
   }
 
@@ -3551,7 +3910,8 @@
       return;
     }
 
-    const placementTarget = getPlacementTarget(player, platform);
+    const rotationVideo = getRotationVideo(player);
+    const placementTarget = getPlacementTarget(player, platform, rotationVideo);
 
     if (!placementTarget) {
       removeButton();
@@ -3561,6 +3921,7 @@
     observeTargetSize(placementTarget);
 
     let button = document.getElementById(BUTTON_ID);
+    let rotateButton = document.getElementById(ROTATE_BUTTON_ID);
 
     if (!button) {
       button = createButton();
@@ -3569,11 +3930,16 @@
       button = createButton();
     }
 
+    if (!rotateButton) {
+      rotateButton = createRotateButton();
+    } else if (!rotateButton.querySelector(".dlp-button-icon")) {
+      rotateButton.remove();
+      rotateButton = createRotateButton();
+    }
+
     button.__dlpPlacementTarget = placementTarget;
-    button.__dlpTargetVideo = platform === "instagram"
-      && placementTarget instanceof HTMLVideoElement
-      ? placementTarget
-      : null;
+    button.__dlpTargetVideo = rotationVideo;
+    syncRotateButton(rotateButton, rotationVideo);
 
     button.title = settings.streamOverlay ? "Show stream links" : "Download this video with DLP";
     button.setAttribute("aria-label", settings.streamOverlay ? "Show stream links" : "Download this video with DLP");
@@ -3597,7 +3963,11 @@
       overlayRoot.appendChild(button);
     }
 
-    placeButtonRelativeToMedia(button, placementTarget, overlayPosition, platform);
+    if (rotateButton.parentElement !== overlayRoot) {
+      overlayRoot.appendChild(rotateButton);
+    }
+
+    placeButtonRelativeToMedia(button, rotateButton, placementTarget, overlayPosition, platform);
   }
 
   function scheduleRefresh() {
@@ -3623,6 +3993,7 @@
       placementFrame = null;
 
       const button = document.getElementById(BUTTON_ID);
+      const rotateButton = document.getElementById(ROTATE_BUTTON_ID);
       const target = button?.__dlpPlacementTarget;
 
       if (!button || !target || !document.documentElement.contains(target)) {
@@ -3636,7 +4007,11 @@
         overlayRoot.appendChild(button);
       }
 
-      placeButtonRelativeToMedia(button, target, getOverlayPosition(), getPlatform());
+      if (rotateButton && rotateButton.parentElement !== overlayRoot) {
+        overlayRoot.appendChild(rotateButton);
+      }
+
+      placeButtonRelativeToMedia(button, rotateButton, target, getOverlayPosition(), getPlatform());
       scheduleRefresh();
     });
   }
@@ -3735,8 +4110,9 @@
     subtree: true
   });
 
-  document.addEventListener("mousemove", handlePageActivity, true);
-  document.addEventListener("touchstart", handlePageActivity, true);
+  document.addEventListener("mousemove", handlePointerActivity, true);
+  document.addEventListener("touchstart", handlePointerActivity, true);
+  document.addEventListener("keydown", handleRotationShortcut, true);
   document.addEventListener("keydown", handlePageActivity, true);
   window.addEventListener("scroll", handlePageActivity, true);
 
