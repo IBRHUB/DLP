@@ -2,13 +2,14 @@
   const BUTTON_ID = "dlp-video-download-button";
   const STREAM_PANEL_ID = "dlp-video-stream-panel";
   const STYLE_ID = "dlp-video-download-style";
-  const STYLE_VERSION = "2";
+  const STYLE_VERSION = "3";
   const TOAST_ID = "dlp-video-download-toast";
   const BUTTON_WIDTH = 30;
   const BUTTON_HEIGHT = 30;
-  const BUTTON_OFFSET = 10;
-  const BUTTON_GAP = 7;
-  const VIEWPORT_MARGIN = 10;
+  const BUTTON_INSET = 4;
+  const BUTTON_GAP = 3;
+  const VIEWPORT_MARGIN = 8;
+  const MIN_VISIBLE_MEDIA_EDGE = 24;
   const AUTO_HIDE_DELAY_MS = 2600;
   const STREAM_PANEL_HIDE_DELAY_MS = 4200;
   const DEEP_SCAN_WAIT_MS = 1600;
@@ -39,9 +40,29 @@
     "bottom-center",
     "bottom-left"
   ]);
+  const AUTO_PLACEMENTS = Object.freeze({
+    "youtube-watch": ["inside-top-right", "inside-top-left"],
+    "youtube-shorts": ["outside-right-top", "outside-left-top", "inside-top-right"],
+    tiktok: ["outside-right-top", "outside-left-top", "inside-top-right"],
+    "instagram-reels": ["outside-right-top", "outside-left-top", "inside-top-right"],
+    "instagram-modal": ["inside-top-right", "inside-top-left"],
+    "instagram-feed": ["inside-top-right", "inside-top-left"],
+    x: ["inside-top-right", "inside-top-left"],
+    soundcloud: ["above-right", "below-right"],
+    generic: ["above-right", "inside-top-right", "below-right", "inside-top-left"]
+  });
+  const MANUAL_PLACEMENTS = Object.freeze({
+    "top-right": ["above-right", "inside-top-right", "below-right"],
+    "top-center": ["above-center", "inside-top-center", "below-center"],
+    "top-left": ["above-left", "inside-top-left", "below-left"],
+    "bottom-right": ["below-right", "inside-bottom-right", "above-right"],
+    "bottom-center": ["below-center", "inside-bottom-center", "above-center"],
+    "bottom-left": ["below-left", "inside-bottom-left", "above-left"]
+  });
 
   let lastUrl = location.href;
   let refreshTimer = null;
+  let placementFrame = null;
   let hideTimer = null;
   let streamPanelHideTimer = null;
   let toastTimer = null;
@@ -99,6 +120,12 @@
     window.clearTimeout(hideTimer);
     window.clearTimeout(streamPanelHideTimer);
     window.clearTimeout(toastTimer);
+
+    if (placementFrame !== null) {
+      window.cancelAnimationFrame(placementFrame);
+      placementFrame = null;
+    }
+
     removeButton();
 
     if (observer) {
@@ -1996,6 +2023,10 @@
         box-sizing: border-box !important;
       }
 
+      #${BUTTON_ID}[hidden] {
+        display: none !important;
+      }
+
       #${BUTTON_ID} .dlp-button-icon {
         display: inline-flex !important;
         flex: 0 0 auto !important;
@@ -2842,7 +2873,7 @@
   }
 
   function hideStreamPanel(panel, button) {
-    if (!panel || !document.body.contains(panel)) {
+    if (!panel || !document.documentElement.contains(panel)) {
       return;
     }
 
@@ -2860,12 +2891,12 @@
   function scheduleStreamPanelAutoHide(panel, button) {
     clearStreamPanelAutoHide();
 
-    if (!settings.autoHideOverlay || !panel || !document.body.contains(panel)) {
+    if (!settings.autoHideOverlay || !panel || !document.documentElement.contains(panel)) {
       return;
     }
 
     streamPanelHideTimer = window.setTimeout(() => {
-      if (!document.body.contains(panel)) {
+      if (!document.documentElement.contains(panel)) {
         return;
       }
 
@@ -2894,13 +2925,18 @@
 
     const panelRect = panel.getBoundingClientRect();
     const panelHeight = Math.min(panelRect.height || maxHeight, maxHeight);
-    const maxLeft = Math.max(VIEWPORT_MARGIN, viewport.width - width - VIEWPORT_MARGIN);
-    const left = clamp(rect.left, VIEWPORT_MARGIN, maxLeft);
+    const minLeft = viewport.left + VIEWPORT_MARGIN;
+    const maxLeft = Math.max(minLeft, viewport.right - width - VIEWPORT_MARGIN);
+    const left = clamp(rect.left, minLeft, maxLeft);
     const belowTop = rect.bottom + BUTTON_GAP;
     const aboveTop = rect.top - panelHeight - BUTTON_GAP;
-    const top = belowTop + panelHeight <= viewport.height - VIEWPORT_MARGIN
+    const top = belowTop + panelHeight <= viewport.bottom - VIEWPORT_MARGIN
       ? belowTop
-      : clamp(aboveTop, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, viewport.height - panelHeight - VIEWPORT_MARGIN));
+      : clamp(
+        aboveTop,
+        viewport.top + VIEWPORT_MARGIN,
+        Math.max(viewport.top + VIEWPORT_MARGIN, viewport.bottom - panelHeight - VIEWPORT_MARGIN)
+      );
 
     panel.style.left = `${left}px`;
     panel.style.top = `${top}px`;
@@ -3039,7 +3075,7 @@
     list.appendChild(loading);
 
     getStreamCandidates((candidates) => {
-      if (!document.body.contains(panel)) {
+      if (!document.documentElement.contains(panel)) {
         return;
       }
 
@@ -3121,7 +3157,7 @@
 
     head.append(titleWrap, refresh, close);
     panel.append(head, list);
-    document.body.appendChild(panel);
+    (button.parentElement || document.body || document.documentElement).appendChild(panel);
     placeStreamPanel(panel, button);
     scheduleStreamPanelAutoHide(panel, button);
     refreshStreamPanel(panel, button);
@@ -3207,6 +3243,11 @@
   }
 
   function removeButton() {
+    if (placementFrame !== null) {
+      window.cancelAnimationFrame(placementFrame);
+      placementFrame = null;
+    }
+
     const existing = document.getElementById(BUTTON_ID);
 
     if (existing) {
@@ -3223,12 +3264,14 @@
   }
 
   function isRectVisible(rect) {
+    const viewport = getViewportSize();
+
     return rect.width > 0
       && rect.height > 0
-      && rect.bottom > 0
-      && rect.right > 0
-      && rect.top < window.innerHeight
-      && rect.left < window.innerWidth;
+      && rect.bottom > viewport.top
+      && rect.right > viewport.left
+      && rect.top < viewport.bottom
+      && rect.left < viewport.right;
   }
 
   function isElementRenderable(element, rect = element.getBoundingClientRect()) {
@@ -3244,8 +3287,9 @@
   }
 
   function getVisibleArea(rect) {
-    const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
-    const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+    const viewport = getViewportSize();
+    const visibleWidth = Math.max(0, Math.min(rect.right, viewport.right) - Math.max(rect.left, viewport.left));
+    const visibleHeight = Math.max(0, Math.min(rect.bottom, viewport.bottom) - Math.max(rect.top, viewport.top));
 
     return visibleWidth * visibleHeight;
   }
@@ -3255,9 +3299,25 @@
   }
 
   function getViewportSize() {
+    const visualViewport = window.visualViewport;
+    const width = Math.max(
+      1,
+      visualViewport?.width || window.innerWidth || document.documentElement.clientWidth || 1
+    );
+    const height = Math.max(
+      1,
+      visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 1
+    );
+    const left = Math.max(0, visualViewport?.offsetLeft || 0);
+    const top = Math.max(0, visualViewport?.offsetTop || 0);
+
     return {
-      width: Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1),
-      height: Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1)
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height
     };
   }
 
@@ -3270,87 +3330,198 @@
     return { width, height };
   }
 
-  function isPlacementCovered(left, top, size, target, button) {
-    const samplePoints = [
-      [left + (size.width / 2), top + (size.height / 2)],
-      [left + 4, top + (size.height / 2)],
-      [left + size.width - 4, top + (size.height / 2)]
+  function getVisibleRect(rect, viewport) {
+    const left = Math.max(rect.left, viewport.left);
+    const top = Math.max(rect.top, viewport.top);
+    const right = Math.min(rect.right, viewport.right);
+    const bottom = Math.min(rect.bottom, viewport.bottom);
+
+    return {
+      left,
+      top,
+      right,
+      bottom,
+      width: Math.max(0, right - left),
+      height: Math.max(0, bottom - top)
+    };
+  }
+
+  function getPlacementTarget(player, platform) {
+    if (player instanceof HTMLVideoElement) {
+      return player;
+    }
+
+    const shouldUseVideo = platform === "tiktok"
+      || platform === "instagram"
+      || platform === "x"
+      || (platform === "youtube" && isYouTubeShortsPage())
+      || !platform;
+
+    if (!shouldUseVideo || typeof player.querySelectorAll !== "function") {
+      return player;
+    }
+
+    const video = getBestVisibleElement(Array.from(player.querySelectorAll("video")));
+    return video && isElementRenderable(video) ? video : player;
+  }
+
+  function getOverlayRoot(target) {
+    const fullscreenElement = document.fullscreenElement;
+
+    if (fullscreenElement
+        && (fullscreenElement === target
+          || fullscreenElement.contains(target)
+          || target.contains(fullscreenElement))) {
+      return fullscreenElement;
+    }
+
+    return document.body || document.documentElement;
+  }
+
+  function getAutoPlacementKey(platform, target) {
+    if (platform === "youtube") {
+      return isYouTubeShortsPage() ? "youtube-shorts" : "youtube-watch";
+    }
+
+    if (platform === "instagram") {
+      if (target.closest('[role="dialog"]')) {
+        return "instagram-modal";
+      }
+
+      return /^\/(?:reels?|stories)\//i.test(location.pathname)
+        ? "instagram-reels"
+        : "instagram-feed";
+    }
+
+    return Object.prototype.hasOwnProperty.call(AUTO_PLACEMENTS, platform)
+      ? platform
+      : "generic";
+  }
+
+  function getPlacementOrder(platform, target, position) {
+    if (position !== "auto") {
+      return MANUAL_PLACEMENTS[position] || AUTO_PLACEMENTS.generic;
+    }
+
+    const key = getAutoPlacementKey(platform, target);
+    return AUTO_PLACEMENTS[key] || AUTO_PLACEMENTS.generic;
+  }
+
+  function createPlacementCandidate(name, rect, size, viewport) {
+    const inside = name.startsWith("inside-");
+    const outside = name.startsWith("outside-");
+    const align = name.endsWith("-left")
+      ? "left"
+      : name.endsWith("-center")
+        ? "center"
+        : "right";
+    const minLeft = viewport.left + VIEWPORT_MARGIN;
+    const maxLeft = viewport.right - size.width - VIEWPORT_MARGIN;
+    const minTop = viewport.top + VIEWPORT_MARGIN;
+    const maxTop = viewport.bottom - size.height - VIEWPORT_MARGIN;
+    let left = rect.right - size.width;
+    let top = rect.top - size.height - BUTTON_GAP;
+
+    if (align === "left") {
+      left = rect.left;
+    } else if (align === "center") {
+      left = rect.left + ((rect.width - size.width) / 2);
+    }
+
+    if (outside) {
+      left = name.startsWith("outside-left")
+        ? rect.left - size.width - BUTTON_GAP
+        : rect.right + BUTTON_GAP;
+      top = rect.top + BUTTON_INSET;
+    } else if (name.startsWith("below-")) {
+      top = rect.bottom + BUTTON_GAP;
+    } else if (name.startsWith("inside-top-")) {
+      top = rect.top + BUTTON_INSET;
+      left += align === "right" ? -BUTTON_INSET : align === "left" ? BUTTON_INSET : 0;
+    } else if (name.startsWith("inside-bottom-")) {
+      top = rect.bottom - size.height - BUTTON_INSET;
+      left += align === "right" ? -BUTTON_INSET : align === "left" ? BUTTON_INSET : 0;
+    }
+
+    const fitsViewport = left >= minLeft && left <= maxLeft && top >= minTop && top <= maxTop;
+    const fitsMedia = !inside || (
+      rect.width >= size.width + (BUTTON_INSET * 2)
+        && rect.height >= size.height + (BUTTON_INSET * 2)
+    );
+
+    return fitsViewport && fitsMedia ? { name, left, top, inside } : null;
+  }
+
+  function isPlacementBlocked(candidate, size, target, button) {
+    const points = [
+      [candidate.left + (size.width / 2), candidate.top + (size.height / 2)],
+      [candidate.left + 3, candidate.top + 3],
+      [candidate.left + size.width - 3, candidate.top + size.height - 3]
     ];
 
-    return samplePoints.some(([x, y]) => {
+    return points.some(([x, y]) => {
       const element = document.elementFromPoint(x, y);
 
-      if (!element || element === button || button.contains(element) || element === target || target.contains(element)) {
+      if (!element || element === button || button.contains(element)) {
         return false;
       }
 
+      if (candidate.inside && (element === target || target.contains(element))) {
+        const control = element.closest(
+          'button, a[href], input, select, textarea, [role="button"], [role="link"]'
+        );
+        return Boolean(control && control !== target && !control.contains(target));
+      }
+
+      const control = element.closest(
+        'button, a[href], input, select, textarea, [role="button"], [role="link"]'
+      );
       const style = window.getComputedStyle(element);
-      return ["fixed", "sticky"].includes(style.position)
-        && style.pointerEvents !== "none"
-        && style.visibility !== "hidden"
-        && style.display !== "none";
+      return Boolean(control || element instanceof HTMLIFrameElement || ["fixed", "sticky"].includes(style.position));
     });
   }
 
-  function placeButtonRelativeToMedia(button, target, position) {
-    const rect = target.getBoundingClientRect();
+  function placeButtonRelativeToMedia(button, target, position, platform) {
+    const targetRect = target.getBoundingClientRect();
     const viewport = getViewportSize();
+    const rect = getVisibleRect(targetRect, viewport);
 
-    if (!isRectVisible(rect)) {
-      button.style.display = "none";
+    if (!isRectVisible(targetRect)
+        || rect.width < MIN_VISIBLE_MEDIA_EDGE
+        || rect.height < MIN_VISIBLE_MEDIA_EDGE) {
+      button.hidden = true;
       return;
     }
 
-    button.style.display = "inline-flex";
-    button.style.position = "fixed";
-    button.style.right = "auto";
-    button.style.bottom = "auto";
-    button.style.top = "0px";
-    button.style.left = "0px";
+    button.hidden = false;
+    button.style.top = `${viewport.top}px`;
+    button.style.left = `${viewport.left}px`;
     const size = getButtonSize(button, viewport);
-    const maxLeft = Math.max(VIEWPORT_MARGIN, viewport.width - size.width - VIEWPORT_MARGIN);
-    const maxTop = Math.max(VIEWPORT_MARGIN, viewport.height - size.height - VIEWPORT_MARGIN);
-    const alignRight = !position.endsWith("left") && !position.endsWith("center");
-    const alignCenter = position.endsWith("center");
-    const preferredLeft = alignRight
-      ? rect.right - size.width
-      : alignCenter
-        ? rect.left + ((rect.width - size.width) / 2)
-        : rect.left;
-    const left = clamp(preferredLeft, VIEWPORT_MARGIN, maxLeft);
-    const aboveTop = rect.top - BUTTON_GAP - size.height;
-    const belowTop = rect.bottom + BUTTON_GAP;
-    const canPlaceAbove = aboveTop >= VIEWPORT_MARGIN
-      && !isPlacementCovered(left, aboveTop, size, target, button);
-    const canPlaceBelow = belowTop + size.height <= viewport.height - VIEWPORT_MARGIN
-      && !isPlacementCovered(left, belowTop, size, target, button);
-    const prefersBelow = position.startsWith("bottom");
-    const isFullscreen = Boolean(
-      document.fullscreenElement
-        && (document.fullscreenElement === target || document.fullscreenElement.contains(target))
-    );
+    const order = document.fullscreenElement
+      ? ["inside-top-right", "inside-top-left"]
+      : getPlacementOrder(platform, target, position);
+    const previousPointerEvents = button.style.getPropertyValue("pointer-events");
+    const previousPointerPriority = button.style.getPropertyPriority("pointer-events");
 
-    let placement = "above";
+    button.style.setProperty("pointer-events", "none", "important");
+    const selected = order
+      .map((name) => createPlacementCandidate(name, rect, size, viewport))
+      .find((candidate) => candidate && !isPlacementBlocked(candidate, size, target, button));
 
-    if (isFullscreen) {
-      placement = "inside";
-    } else if (prefersBelow) {
-      placement = canPlaceBelow ? "below" : canPlaceAbove ? "above" : "inside";
+    if (previousPointerEvents) {
+      button.style.setProperty("pointer-events", previousPointerEvents, previousPointerPriority);
     } else {
-      placement = canPlaceAbove ? "above" : canPlaceBelow ? "below" : "inside";
+      button.style.removeProperty("pointer-events");
     }
 
-    let top = aboveTop;
-
-    if (placement === "below") {
-      top = belowTop;
-    } else if (placement === "inside") {
-      top = rect.top + BUTTON_GAP;
+    if (!selected) {
+      button.hidden = true;
+      return;
     }
 
-    button.dataset.dlpPlacement = placement;
-    button.style.top = `${clamp(top, VIEWPORT_MARGIN, maxTop)}px`;
-    button.style.left = `${left}px`;
+    button.dataset.dlpPlacement = selected.name;
+    button.style.top = `${selected.top}px`;
+    button.style.left = `${selected.left}px`;
     syncAutoHideAfterPlacement(button);
   }
 
@@ -3380,7 +3551,14 @@
       return;
     }
 
-    observeTargetSize(player);
+    const placementTarget = getPlacementTarget(player, platform);
+
+    if (!placementTarget) {
+      removeButton();
+      return;
+    }
+
+    observeTargetSize(placementTarget);
 
     let button = document.getElementById(BUTTON_ID);
 
@@ -3391,9 +3569,10 @@
       button = createButton();
     }
 
+    button.__dlpPlacementTarget = placementTarget;
     button.__dlpTargetVideo = platform === "instagram"
-      && player instanceof HTMLVideoElement
-      ? player
+      && placementTarget instanceof HTMLVideoElement
+      ? placementTarget
       : null;
 
     button.title = settings.streamOverlay ? "Show stream links" : "Download this video with DLP";
@@ -3412,11 +3591,13 @@
 
     const overlayPosition = getOverlayPosition();
 
-    if (button.parentElement !== document.body) {
-      document.body.appendChild(button);
+    const overlayRoot = getOverlayRoot(placementTarget);
+
+    if (button.parentElement !== overlayRoot) {
+      overlayRoot.appendChild(button);
     }
 
-    placeButtonRelativeToMedia(button, player, overlayPosition);
+    placeButtonRelativeToMedia(button, placementTarget, overlayPosition, platform);
   }
 
   function scheduleRefresh() {
@@ -3431,6 +3612,33 @@
 
     window.clearTimeout(refreshTimer);
     refreshTimer = window.setTimeout(ensureButton, 120);
+  }
+
+  function schedulePlacementUpdate() {
+    if (!extensionActive || placementFrame !== null) {
+      return;
+    }
+
+    placementFrame = window.requestAnimationFrame(() => {
+      placementFrame = null;
+
+      const button = document.getElementById(BUTTON_ID);
+      const target = button?.__dlpPlacementTarget;
+
+      if (!button || !target || !document.documentElement.contains(target)) {
+        scheduleRefresh();
+        return;
+      }
+
+      const overlayRoot = getOverlayRoot(target);
+
+      if (button.parentElement !== overlayRoot) {
+        overlayRoot.appendChild(button);
+      }
+
+      placeButtonRelativeToMedia(button, target, getOverlayPosition(), getPlatform());
+      scheduleRefresh();
+    });
   }
 
   function watchUrlChanges() {
@@ -3458,15 +3666,20 @@
       };
     }
 
+    const handleViewportResize = () => {
+      schedulePlacementUpdate();
+      scheduleRefresh();
+    };
+
     window.addEventListener("popstate", notify);
-    window.addEventListener("resize", scheduleRefresh);
-    window.addEventListener("scroll", scheduleRefresh, true);
+    window.addEventListener("resize", handleViewportResize);
+    window.addEventListener("scroll", schedulePlacementUpdate, true);
     document.addEventListener("fullscreenchange", scheduleRefresh, true);
     document.addEventListener("yt-navigate-finish", scheduleRefresh);
 
     if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", scheduleRefresh);
-      window.visualViewport.addEventListener("scroll", scheduleRefresh);
+      window.visualViewport.addEventListener("resize", handleViewportResize);
+      window.visualViewport.addEventListener("scroll", schedulePlacementUpdate);
     }
   }
 
