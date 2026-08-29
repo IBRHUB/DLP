@@ -668,6 +668,23 @@ function isInstagramCdnMediaUrl(url) {
   }
 }
 
+function isExactInstagramVideoUrl(url) {
+  const safeUrl = getSafeHttpsUrl(url);
+
+  if (!safeUrl) {
+    return false;
+  }
+
+  try {
+    const host = new URL(safeUrl).hostname.toLowerCase();
+    // The content script only supplies this field from the clicked <video>'s
+    // currentSrc/source. Do not reclassify that source from its opaque CDN URL.
+    return isInstagramCdnHost(host);
+  } catch {
+    return false;
+  }
+}
+
 function isInstagramPageUrl(url) {
   const safeUrl = getSafeHttpsUrl(url);
 
@@ -874,7 +891,9 @@ function chooseInstagramDirectMediaCandidate(candidates, currentPageUrl, targetD
       && Math.abs(candidateDuration - targetDuration) <= durationTolerance;
   });
 
-  return matchingDuration || rankedCandidates[0];
+  // With a real duration, an unmatched CDN URL may be a preloaded neighbour
+  // reel. Never let that request replace the clicked video.
+  return matchingDuration || null;
 }
 
 function scopeCandidatesToInstagramPage(candidates, currentPageUrl) {
@@ -1427,6 +1446,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const title = message.title || (sender.tab && sender.tab.title) || "";
     const mediaPageUrl = message.mediaPageUrl || message.pageUrl || sender.tab?.url;
     const candidateStartedAt = Number(message.candidateStartedAt);
+    const exactInstagramVideoUrl = isInstagramPageUrl(mediaPageUrl)
+      && isExactInstagramVideoUrl(message.directVideoUrl)
+      ? getSafeHttpsUrl(message.directVideoUrl)
+      : "";
 
     getSettings((settings) => {
       const allCandidates = [
@@ -1436,7 +1459,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const candidates = Number.isFinite(candidateStartedAt)
         ? allCandidates.filter((candidate) => !candidate.time || candidate.time >= candidateStartedAt)
         : allCandidates;
-      const url = chooseDownloadUrl(preferredUrl, {
+      // An exact video.currentSrc must never compete with preload requests from
+      // other Instagram videos in the same tab. Otherwise choose only a CDN
+      // candidate whose embedded duration matches the active video.
+      const url = exactInstagramVideoUrl || chooseDownloadUrl(preferredUrl, {
         settings,
         pageUrl: mediaPageUrl,
         preferPageUrl: Boolean(message.preferPageUrl),
@@ -1445,9 +1471,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           : null,
         candidates
       });
-      const scopedCandidates = scopeCandidatesToInstagramPage(candidates, mediaPageUrl);
+      const scopedCandidates = exactInstagramVideoUrl
+        ? []
+        : scopeCandidatesToInstagramPage(candidates, mediaPageUrl);
       const scopedMediaPair = findMediaPair(scopedCandidates);
-      const fallbackMedia = !message.preferPageUrl && isSupportedMediaPageUrl(url)
+      const fallbackMedia = !exactInstagramVideoUrl
+        && !message.preferPageUrl
+        && isSupportedMediaPageUrl(url)
         ? chooseFallbackMedia(scopedCandidates, url, scopedMediaPair)
         : null;
 

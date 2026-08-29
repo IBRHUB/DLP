@@ -15,10 +15,12 @@
   const AUTO_HIDE_DELAY_MS = 2600;
   const STREAM_PANEL_HIDE_DELAY_MS = 4200;
   const DEEP_SCAN_WAIT_MS = 1600;
-  const INSTAGRAM_SCAN_WAIT_MS = 3500;
+  const INSTAGRAM_SCAN_WAIT_MS = 8000;
+  const INSTAGRAM_NAVIGATION_CAPTURE_GRACE_MS = 4500;
   const EXPERIMENTAL_POLL_MS = 120;
   const MAX_PAGE_STREAM_CANDIDATES = 50;
   const MAX_INSTAGRAM_SCRIPT_SCAN_CHARS = 3000000;
+  const INSTAGRAM_EMBEDDED_SCAN_INTERVAL_MS = 350;
   const MEDIA_URL_RE = /\.(m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[?#]|$)/i;
   const STREAM_URL_RE = /(?:playlist|manifest|master|index)\.(?:m3u8|m3u|mpd)(?:[?#]|$)/i;
   const MEDIA_QUERY_RE = /[?&](?:file|filename|name|src|url)=[^&#]+\.(?:m3u8|m3u|mpd|mp4|webm|m4v|mov)(?:[&#]|$)/i;
@@ -83,6 +85,12 @@
   let tikTokItemsCacheAt = 0;
   let lastInstagramMediaContext = "";
   let instagramCandidatesStartedAt = Date.now();
+  let instagramEmbeddedCandidates = [];
+  let instagramEmbeddedCandidateContext = "";
+  let instagramEmbeddedCandidateScanAt = 0;
+  // This cache is intentionally per <video>, not per tab. Instagram keeps several
+  // preloaded videos alive at once, so a tab-wide "best" URL can belong to another reel.
+  const instagramVideoSourceCache = new WeakMap();
   const videoRotationStates = new WeakMap();
 
   function normalizeSettings(storedSettings) {
@@ -865,12 +873,29 @@
   }
 
   function getInstagramScriptMediaCandidates(context) {
+    const contextKey = context?.mediaPageUrl || location.href;
+
+    if (contextKey === instagramEmbeddedCandidateContext
+        && Date.now() - instagramEmbeddedCandidateScanAt < INSTAGRAM_EMBEDDED_SCAN_INTERVAL_MS) {
+      return instagramEmbeddedCandidates;
+    }
+
     const candidates = [];
     const seen = new Set();
-    let remainingBudget = MAX_INSTAGRAM_SCRIPT_SCAN_CHARS;
+    const addUrlsFromText = (text, source) => {
+      for (const url of extractInstagramMediaUrlsFromText(text)) {
+        if (seen.has(url)) {
+          continue;
+        }
+
+        seen.add(url);
+        candidates.push(createExperimentalCandidate(url, source, undefined, context));
+      }
+    };
+    let remainingScriptBudget = MAX_INSTAGRAM_SCRIPT_SCAN_CHARS;
 
     for (const script of Array.from(document.scripts)) {
-      if (remainingBudget <= 0) {
+      if (remainingScriptBudget <= 0) {
         break;
       }
 
@@ -880,22 +905,25 @@
         continue;
       }
 
-      const scanText = text.length > remainingBudget
-        ? text.slice(0, remainingBudget)
+      const scanText = text.length > remainingScriptBudget
+        ? text.slice(0, remainingScriptBudget)
         : text;
-      remainingBudget -= scanText.length;
-
-      for (const url of extractInstagramMediaUrlsFromText(scanText)) {
-        if (seen.has(url)) {
-          continue;
-        }
-
-        seen.add(url);
-        candidates.push(createExperimentalCandidate(url, "instagram.script", undefined, context));
-      }
+      remainingScriptBudget -= scanText.length;
+      addUrlsFromText(scanText, "instagram.script");
     }
 
-    return candidates;
+    // Instagram also serializes media variants into DOM attributes and hydrated
+    // markup. They are not guaranteed to live in a script node, especially for
+    // blob-backed playback, so scan that source as well.
+    const documentText = document.documentElement?.innerHTML || "";
+    if (documentText) {
+      addUrlsFromText(documentText.slice(0, MAX_INSTAGRAM_SCRIPT_SCAN_CHARS), "instagram.document");
+    }
+
+    instagramEmbeddedCandidateContext = contextKey;
+    instagramEmbeddedCandidateScanAt = Date.now();
+    instagramEmbeddedCandidates = candidates.filter(Boolean);
+    return instagramEmbeddedCandidates;
   }
 
   function findFirstMatchingLink(container, predicate) {
@@ -1173,28 +1201,13 @@
     candidates.push(...pageStreamCandidates);
 
     if (isInstagramPage) {
-      const hasLiveMediaCandidate = candidates.some((candidate) =>
-        isInstagramLiveMediaCandidate(candidate));
-
-      if (!visibleVideo || !hasLiveMediaCandidate) {
-        candidates.push(...getInstagramScriptMediaCandidates(candidateContext));
-      }
+      // The page keeps next/previous reels in the resource timing buffer. A
+      // preload there must not suppress the serialized video_versions/DASH
+      // data for the reel currently under the overlay.
+      candidates.push(...getInstagramScriptMediaCandidates(candidateContext));
     }
 
     return rankExperimentalCandidates(candidates.filter(Boolean));
-  }
-
-  function isInstagramLiveMediaCandidate(candidate) {
-    return Boolean(candidate
-      && candidate.source !== "instagram.script"
-      && [
-        "hls",
-        "dash",
-        "direct-mp4",
-        "direct-webm",
-        "direct-video"
-      ].includes(candidate.type)
-      && isLikelyMediaUrl(candidate.url));
   }
 
   function createExperimentalCandidate(rawUrl, source, time, context) {
@@ -1245,8 +1258,10 @@
   }
 
   function syncInstagramMediaContext(visibleVideo, mediaPageUrl) {
-    const videoSource = visibleVideo?.currentSrc || visibleVideo?.src || "";
-    const contextKey = `${mediaPageUrl || location.href}|${videoSource}`;
+    // A source transition is normal while Instagram starts a video. Clearing
+    // the tab cache at that moment deletes the CDN request we just captured.
+    // Reset only when the selected reel/post itself changes.
+    const contextKey = mediaPageUrl || location.href;
 
     if (!lastInstagramMediaContext) {
       lastInstagramMediaContext = contextKey;
@@ -1263,23 +1278,17 @@
   }
 
   function resetInstagramMediaCandidates() {
-    instagramCandidatesStartedAt = Date.now();
-    pageStreamCandidates = [];
-    clearBackgroundTabCandidates();
-  }
-
-  function clearBackgroundTabCandidates() {
-    if (!hasRuntime()) {
-      return;
-    }
-
-    try {
-      chrome.runtime.sendMessage({ type: "dlp-clear-tab-candidates" }, () => {
-        void chrome.runtime.lastError;
-      });
-    } catch {
-      // The page may outlive an extension reload.
-    }
+    // Opening a reel from a profile is an SPA transition: Instagram often
+    // starts the media request while the URL still points at /<user>/reels/.
+    // Keep that very recent capture through the URL transition, then isolate
+    // the right reel by its video duration below.
+    const cutoff = Date.now() - INSTAGRAM_NAVIGATION_CAPTURE_GRACE_MS;
+    instagramCandidatesStartedAt = cutoff;
+    pageStreamCandidates = pageStreamCandidates.filter((candidate) =>
+      Number(candidate?.time) >= cutoff);
+    instagramEmbeddedCandidates = [];
+    instagramEmbeddedCandidateContext = "";
+    instagramEmbeddedCandidateScanAt = 0;
   }
 
   function sendStreamCandidateToBackground(candidate) {
@@ -1388,6 +1397,17 @@
     const ncVs = decodeInstagramBase64Value(parsedUrl.searchParams.get("_nc_vs"));
 
     return `${parsedUrl.pathname} ${parsedUrl.search} ${efg} ${ncVs}`.toLowerCase();
+  }
+
+  function getInstagramMediaDuration(url) {
+    try {
+      const parsed = new URL(url, location.href);
+      const metadata = JSON.parse(decodeInstagramBase64Value(parsed.searchParams.get("efg")));
+      const duration = Number(metadata.duration_s ?? metadata.duration);
+      return Number.isFinite(duration) && duration > 0 ? duration : null;
+    } catch {
+      return null;
+    }
   }
 
   function isInstagramByteRangeUrl(url) {
@@ -1605,6 +1625,24 @@
         || isLikelyMediaUrl(candidate.url)));
   }
 
+  function hasMatchingInstagramCandidate(candidates, video) {
+    const duration = Number(video?.duration);
+
+    if (!Number.isFinite(duration) || duration <= 0) {
+      return false;
+    }
+
+    const tolerance = Math.max(0.75, Math.min(3, duration * 0.05));
+    return candidates.some((candidate) => {
+      if (candidate?.type === "direct-audio") {
+        return false;
+      }
+
+      const candidateDuration = getInstagramMediaDuration(candidate?.url);
+      return candidateDuration !== null && Math.abs(candidateDuration - duration) <= tolerance;
+    });
+  }
+
   function waitForExperimentalCandidates(callback, forceExperimental, forceDeepScan, preferredVideo = null) {
     const platform = getPlatform();
     const deepScan = Boolean(forceDeepScan || settings.deepScanner);
@@ -1624,7 +1662,11 @@
     const poll = () => {
       const candidates = getExperimentalCandidates(deepScan, preferredVideo);
 
-      if (hasReadyExperimentalCandidate(candidates) || Date.now() - startedAt >= waitMs) {
+      const isReady = platform === "instagram"
+        ? hasMatchingInstagramCandidate(candidates, preferredVideo || getInstagramActiveVideo())
+        : hasReadyExperimentalCandidate(candidates);
+
+      if (isReady || Date.now() - startedAt >= waitMs) {
         callback(candidates);
         return;
       }
@@ -1891,6 +1933,55 @@
     }
 
     return linkedMediaUrl;
+  }
+
+  function getInstagramVideoSource(video) {
+    if (!(video instanceof HTMLVideoElement)) {
+      return "";
+    }
+
+    const sources = [
+      video.currentSrc,
+      video.src,
+      ...Array.from(video.querySelectorAll("source[src]"), (source) => source.src)
+    ];
+
+    for (const source of sources) {
+      try {
+        const parsed = new URL(source, location.href);
+
+        // Accept an extension-less Instagram CDN URL too. CDN video URLs do not
+        // consistently end in .mp4, but currentSrc comes from this exact <video>.
+        if (parsed.protocol === "https:"
+            && isInstagramCdnHost(parsed.hostname.toLowerCase())) {
+          return parsed.href;
+        }
+      } catch {
+        // Ignore an empty, blob:, or malformed source and keep checking.
+      }
+    }
+
+    return "";
+  }
+
+  function rememberInstagramVideoSource(video) {
+    const url = getInstagramVideoSource(video);
+
+    if (url) {
+      instagramVideoSourceCache.set(video, url);
+    }
+
+    return url;
+  }
+
+  function getExactInstagramVideoUrl(video) {
+    return rememberInstagramVideoSource(video) || instagramVideoSourceCache.get(video) || "";
+  }
+
+  function captureInstagramVideoSource(event) {
+    if (getPlatform() === "instagram" && event.target instanceof HTMLVideoElement) {
+      rememberInstagramVideoSource(event.target);
+    }
   }
 
   function getXPlayerElement() {
@@ -2771,16 +2862,23 @@
     button.classList.remove("dlp-overlay-hidden");
     showToast("Sending to DLP", "success");
 
-    waitForExperimentalCandidates((candidates) => {
+    const sendRequest = (candidates) => {
       try {
+        const directVideoUrl = instagramRequest ? getExactInstagramVideoUrl(mediaVideo) : "";
+
         chrome.runtime.sendMessage(
           {
             type: "dlp-download-current-video",
             url: requestUrl,
+            // This is the only URL that may bypass candidate ranking: it came
+            // from the precise <video> that owns the clicked overlay.
+            directVideoUrl,
             title: requestTitle,
             pageUrl: requestPageUrl,
             mediaPageUrl: requestMediaPageUrl || requestPageUrl,
-            preferPageUrl: instagramRequest && Boolean(requestMediaPageUrl),
+            // A page URL remains a safe last resort. Do not turn a missing CDN
+            // observation into a local "missing_url" error.
+            preferPageUrl: false,
             mediaDuration: mediaVideo && Number.isFinite(mediaVideo.duration)
               ? mediaVideo.duration
               : null,
@@ -2822,7 +2920,22 @@
         console.log("DLP extension context ended:", error && error.message ? error.message : error);
         deactivateExtensionUi();
       }
-    }, false, Boolean(settings.deepScanner), targetVideo);
+    };
+
+    // When Instagram has already assigned a CDN source to this exact video,
+    // send it immediately. Waiting and ranking the tab's preload traffic is
+    // what caused a different reel to be selected.
+    if (instagramRequest && getExactInstagramVideoUrl(mediaVideo)) {
+      sendRequest([]);
+      return;
+    }
+
+    waitForExperimentalCandidates(
+      sendRequest,
+      false,
+      Boolean(settings.deepScanner),
+      targetVideo
+    );
   }
 
   function isStreamCandidate(candidate) {
@@ -4112,6 +4225,10 @@
 
   document.addEventListener("mousemove", handlePointerActivity, true);
   document.addEventListener("touchstart", handlePointerActivity, true);
+  document.addEventListener("loadstart", captureInstagramVideoSource, true);
+  document.addEventListener("loadedmetadata", captureInstagramVideoSource, true);
+  document.addEventListener("canplay", captureInstagramVideoSource, true);
+  document.addEventListener("playing", captureInstagramVideoSource, true);
   document.addEventListener("keydown", handleRotationShortcut, true);
   document.addEventListener("keydown", handlePageActivity, true);
   window.addEventListener("scroll", handlePageActivity, true);
